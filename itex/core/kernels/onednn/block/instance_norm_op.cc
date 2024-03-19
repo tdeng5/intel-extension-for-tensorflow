@@ -215,23 +215,20 @@ class OneDnnInstanceNormOp : public OpKernel {
       auto propagation = dnnl::prop_kind::forward_inference;
       auto flags = dnnl::normalization_flags::use_scale |
                    dnnl::normalization_flags::use_shift;
-
-      dnnl::batch_normalization_forward::desc bn_fwd_desc(propagation, src_md,
-                                                          epsilon_, flags);
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       dnnl::batch_normalization_forward::primitive_desc bn_fwd_pd;
 
       if (fuse_activation) {
         dnnl::post_ops post_ops;
-        post_ops.append_eltwise(1.0, dnnl::algorithm::eltwise_relu,
-                                leakyrelu_alpha_, 0.0);
+        post_ops.append_eltwise(dnnl::algorithm::eltwise_relu, leakyrelu_alpha_,
+                                0.0);
         attr.set_post_ops(post_ops);
         bn_fwd_pd = dnnl::batch_normalization_forward::primitive_desc(
-            bn_fwd_desc, attr, onednn_engine);
+            onednn_engine, propagation, src_md, src_md, epsilon_, flags, attr);
       } else {
         bn_fwd_pd = dnnl::batch_normalization_forward::primitive_desc(
-            bn_fwd_desc, onednn_engine);
+            onednn_engine, propagation, src_md, src_md, epsilon_, flags);
       }
 
       dnnl::batch_normalization_forward bn_fwd_primitive(bn_fwd_pd);
@@ -343,6 +340,7 @@ REGISTER_INSTANCE_NORM_GPU(Eigen::half, float);
                           OneDnnInstanceNormOp<CPUDevice, T, U, true>);
 REGISTER_INSTANCE_NORM_CPU(float, float);
 REGISTER_INSTANCE_NORM_CPU(Eigen::bfloat16, float);
+REGISTER_INSTANCE_NORM_CPU(Eigen::half, float);
 #undef REGISTER_INSTANCE_NORM_CPU
 
 #endif

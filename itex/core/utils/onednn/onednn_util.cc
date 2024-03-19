@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifndef ITEX_BUILD_JAX
 #include "itex/core/utils/onednn/onednn_util.h"
 
 #include <unordered_map>
@@ -20,15 +21,21 @@ limitations under the License.
 #include "itex/core/utils/register_types.h"
 
 namespace itex {
+// Helper function to reorder oneDNN memory without `OpKernelContext`.
+void ReorderMemoryInternal(const dnnl::memory* src_memory,
+                           dnnl::memory* reorder_memory,
+                           dnnl::stream& onednn_stream) {
+  dnnl::reorder reorder_primitive = dnnl::reorder(*src_memory, *reorder_memory);
+  std::unordered_map<int, dnnl::memory> reorder_args = {
+      {DNNL_ARG_SRC, *src_memory}, {DNNL_ARG_DST, *reorder_memory}};
+  reorder_primitive.execute(onednn_stream, reorder_args);
+}
 
 void ReorderMemory(const OpKernelContext& context,
                    const dnnl::memory* src_memory, dnnl::memory* reorder_memory,
                    const dnnl::engine& onednn_engine) {
   dnnl::stream onednn_stream = CreateDnnlStream(context, onednn_engine);
-  dnnl::reorder reorder_primitive = dnnl::reorder(*src_memory, *reorder_memory);
-  std::unordered_map<int, dnnl::memory> reorder_args = {
-      {DNNL_ARG_SRC, *src_memory}, {DNNL_ARG_DST, *reorder_memory}};
-  reorder_primitive.execute(onednn_stream, reorder_args);
+  ReorderMemoryInternal(src_memory, reorder_memory, onednn_stream);
 }
 
 // TF datatype and shape is meaningless for some tensors, such as scratchpad
@@ -89,8 +96,10 @@ void WeightCacheManager<T>::SetCache(
                  context->allocate_persistent(
                      DataTypeToEnum<ShortDT>::value, weight_md_tf_shape,
                      &weight_cached_md_, &weight_md_cached_tensor, alloc_attr));
-  *reinterpret_cast<dnnl::memory::desc*>(
-      weight_md_cached_tensor->flat<ShortDT>().data()) = weight_expected_md;
+  dnnl_memory_desc_t c_weight_expected_md;
+  dnnl_memory_desc_clone(&c_weight_expected_md, weight_expected_md.get());
+  *reinterpret_cast<dnnl_memory_desc_t*>(
+      weight_md_cached_tensor->flat<ShortDT>().data()) = c_weight_expected_md;
 }
 
 template <typename T>
@@ -145,7 +154,8 @@ void BiasCacheManager<T>::SetCache(OpKernelContext* context,
                                    const dnnl::memory::desc& bias_md,
                                    const dnnl::primitive_attr& bias_attr,
                                    void* bias_data,
-                                   const dnnl::engine& onednn_engine)
+                                   const dnnl::engine& onednn_engine,
+                                   const dnnl::memory& scales_mem)
     TF_LOCKS_EXCLUDED(mu_) {
   mutex_lock lock(&mu_);
 
@@ -176,6 +186,8 @@ void BiasCacheManager<T>::SetCache(OpKernelContext* context,
       dnnl::reorder(bias_mem, bias_scaled_mem, bias_attr);
   std::unordered_map<int, dnnl::memory> reorder_args = {
       {DNNL_ARG_SRC, bias_mem}, {DNNL_ARG_DST, bias_scaled_mem}};
+  if (scales_mem != dnnl::memory())
+    reorder_args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, scales_mem});
 
   // Execute reorder
   auto onednn_stream = CreateDnnlStream(*context, onednn_engine);
@@ -197,3 +209,4 @@ TF_CALL_QUANTIZED_TYPES(DEFINE_BIAS_CACHE);
 #undef DEFINE_BIAS_CACHE
 
 }  // namespace itex
+#endif  // ITEX_BUILD_JAX

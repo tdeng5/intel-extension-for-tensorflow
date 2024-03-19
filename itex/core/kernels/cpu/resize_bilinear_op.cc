@@ -80,15 +80,13 @@ class ResizeBilinearOp : public OpKernel {
       memory::desc dst_md = memory::desc(dst_dims, dnnl::memory::data_type::f32,
                                          dnnl::memory::format_tag::nhwc);
 
-      auto fwd_desc = dnnl::resampling_forward::desc(
-          prop_kind::forward_training
-          /* training and inference is same*/,
-          algorithm::resampling_linear, src_md, dst_md);
-
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
-      auto fwd_pd = dnnl::resampling_forward::primitive_desc(fwd_desc, attr,
-                                                             onednn_engine);
+      auto fwd_pd = dnnl::resampling_forward::primitive_desc(
+          onednn_engine,
+          prop_kind::forward_training
+          /* training and inference is same*/,
+          algorithm::resampling_linear, src_md, dst_md, attr);
       Tensor scratchpad_tensor;
       dnnl::memory scratchpad_mem;
       int64 scratchpad_size = fwd_pd.scratchpad_desc().get_size() / sizeof(T);
@@ -208,22 +206,14 @@ class ResizeBilinearGradOp : public OpKernel {
       memory::dims diff_src_dims;
       memory::desc diff_src_md;
       create_dims_and_md(diff_src_tf_shape, &diff_src_dims, &diff_src_md);
-
-      auto bwd_desc = dnnl::resampling_backward::desc(
-          dnnl::algorithm::resampling_linear, diff_src_md, diff_dst_md);
-
-      // resampling needs a forward hint, we create it ourselve due to we can't
-      // get the true one.
-      auto fwd_desc = dnnl::resampling_forward::desc(
-          dnnl::prop_kind::forward_training, dnnl::algorithm::resampling_linear,
-          src_md, diff_dst_md);
-      auto fwd_pd =
-          dnnl::resampling_forward::primitive_desc(fwd_desc, onednn_engine);
-
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+      auto fwd_pd = dnnl::resampling_forward::primitive_desc(
+          onednn_engine, dnnl::prop_kind::forward_training,
+          dnnl::algorithm::resampling_linear, src_md, diff_dst_md);
       auto bwd_pd = dnnl::resampling_backward::primitive_desc(
-          bwd_desc, attr, onednn_engine, fwd_pd);
+          onednn_engine, dnnl::algorithm::resampling_linear, diff_src_md,
+          diff_dst_md, fwd_pd, attr);
       Tensor scratchpad_tensor;
       dnnl::memory scratchpad_mem;
       int64 scratchpad_size = bwd_pd.scratchpad_desc().get_size() / sizeof(T);

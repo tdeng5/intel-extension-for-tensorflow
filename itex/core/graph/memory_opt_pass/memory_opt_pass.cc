@@ -22,8 +22,8 @@ limitations under the License.
 
 #include "google/protobuf/text_format.h"
 #include "itex/core/graph/utils/graph_properties.h"
+#include "itex/core/graph/utils/layout_utils.h"
 #include "itex/core/graph/utils/op_types.h"
-#include "itex/core/graph/utils/utils.h"
 #include "itex/core/utils/attr_value_util.h"
 #include "itex/core/utils/types.h"
 
@@ -37,21 +37,21 @@ std::vector<SearchInfo> sinfo;
 
 // Forwarding from input:0 to output:0
 const auto regular_inplace_rule = gtl::FlatSet<string>{
-    "_ITEXSoftmax",
-};
+    "_ITEXSoftmax",          "_ITEXInstanceNorm",     "_ITEXFusedInstanceNorm",
+    "_ITEXMklLayerNorm",     "_ITEXLayerNorm",        "_ITEXFusedBatchNorm",
+    "_ITEXFusedBatchNormV2", "_ITEXFusedBatchNormV3", "_ITEXFusedBatchNormEx"};
 
 const auto add_inplace_rule = gtl::FlatSet<string>{
-    "_FusedConv2DWithSum",     "_FusedMatMulWithSum",
     "_ITEXFusedConv2DWithSum", "_ITEXFusedAccMatMulWithSum",
-    "_ITEXFusedMatMulWithSum", "_OneDnnFusedConv2D",
-    "_OneDnnFusedMatMul"};
+    "_ITEXFusedMatMulWithSum", "_OneDnnFusedConv2D", "_OneDnnFusedMatMul"};
 
+#ifdef INTEL_CPU_ONLY
+const auto onednngraph_inplace_rule =
+    gtl::FlatSet<string>{"_OneDnnGraphCPU", "OneDnnGraphCPU"};
+#else
 const auto onednngraph_inplace_rule =
     gtl::FlatSet<string>{"_OneDnnGraph", "OneDnnGraph"};
-
-bool IsOneDnnLayoutDependentOp(const string& op_name) {
-  return op_name.substr(0, 7) == "_OneDnn";
-}
+#endif
 
 static constexpr int MAX_LLGA_SEARCH_NODES = 50;
 
@@ -295,7 +295,8 @@ void DetectUnvisitedNode(MemoryOptContext* ctx,
     const auto* tgt_node_def = tgt_node_view->node();
 
     // Const and fetch nodes should not be forwarded.
-    if (IsInPreserveSet(ctx, tgt_node_def)) continue;
+    if (IsInPreserveSet(ctx, tgt_node_def) || IsAnyConst(*tgt_node_def))
+      continue;
 
     // Current node and target node must be on the same device.
     if (!IsOnSameDevice(node_view, tgt_node_view)) continue;
@@ -359,7 +360,23 @@ void StaticInplaceOpt(MemoryOptContext* ctx, const char* device_name) {
   }
 }
 
-Status RunMemoryOptPass(const char* device_name, const GrapplerItem& item,
+void WeightCacheOpt(MemoryOptContext* ctx) {
+  int num_nodes = ctx->graph_view.graph()->node_size();
+
+  for (int node_index = num_nodes - 1; node_index >= 0; --node_index) {
+    const auto* node_view = ctx->graph_view.GetNode(node_index);
+    auto* node_def = node_view->node();
+
+    // Filter of Quantized ops must be constant and `is_filter_const` must be
+    // defaulted as True.
+    if (node_def->op().find("Quantized") == std::string::npos)
+      CheckConstFilter(node_view, ctx->nodes_to_preserve);
+
+    WeightPrePack(node_view);
+  }
+}
+
+Status RunMemoryOptPass(OptimizerContext* opt_ctx, const GrapplerItem& item,
                         const GraphDef& graph_def, GraphDef* optimized_graph) {
   Status status;
   GraphDef mutable_graph_def = graph_def;
@@ -370,7 +387,9 @@ Status RunMemoryOptPass(const char* device_name, const GrapplerItem& item,
   TF_ABORT_IF_ERROR(
       ctx.graph_view.SortTopologically(/*ignore_cycles=*/false, {}));
 
-  StaticInplaceOpt(&ctx, device_name);
+  StaticInplaceOpt(&ctx, opt_ctx->device_name);
+
+  WeightCacheOpt(&ctx);
 
   // Introduce more optimization if needed.
 

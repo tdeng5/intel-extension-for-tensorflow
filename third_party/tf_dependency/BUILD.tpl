@@ -5,6 +5,7 @@ load(
     "template_rule",
 )
 load("@intel_extension_for_tensorflow//itex/core/utils:build_config.bzl", "cc_proto")
+load("@intel_extension_for_tensorflow//itex:itex.bzl", "cc_library")
 
 cc_library(
     name = "tf_header_lib",
@@ -107,6 +108,18 @@ template_rule(
 )
 
 template_rule(
+    name = "graph_debug_info_plugin",
+    src = select({
+        "@intel_extension_for_tensorflow//itex:tf_version_2_12": "include/tensorflow/core/protobuf/graph_debug_info.proto",
+        "//conditions:default": "include/tensorflow/core/framework/graph_debug_info.proto",
+    }),
+    out = "include/protos/graph_debug_info.proto",
+    substitutions = {
+        "package tensorflow;": "package itex;",
+    },
+)
+
+template_rule(
     name = "op_def_plugin",
     src = "include/tensorflow/core/framework/op_def.proto",
     out = "include/protos/op_def.proto",
@@ -148,6 +161,7 @@ template_rule(
     substitutions = {
         "package tensorflow;": "package itex;",
         "tensorflow/core/framework/function.proto": "function.proto",
+        "tensorflow/core/framework/graph_debug_info.proto": "graph_debug_info.proto",
         "tensorflow/core/framework/node_def.proto": "node_def.proto",
         "tensorflow/core/framework/versions.proto": "versions.proto",
     },
@@ -188,31 +202,44 @@ template_rule(
 
 template_rule(
     name = "xplane_plugin",
-    src = "include/tensorflow/core/profiler/protobuf/xplane.proto",
+    src = "include/tensorflow/tsl/profiler/protobuf/xplane.proto",
     out = "include/protos/xplane.proto",
     substitutions = {
         "package tensorflow.profiler;": "package itex;",
     },
 )
 
+template_rule(
+    name = "summary_plugin",
+    src = "include/tensorflow/core/framework/summary.proto",
+    out = "include/protos/summary.proto",
+    substitutions = {
+        "package tensorflow;": "package itex;",
+        "tensorflow/core/framework/tensor.proto": "tensor.proto",
+        "import public \"tsl/protobuf/histogram.proto\";": "",
+        "import public \"tensorflow/tsl/protobuf/histogram.proto\";": "",
+        "HistogramProto histo = 5;": "",
+    },
+)
+
 cc_proto(
     name = "types",
-    src = "types.proto",
+    src = "protos_all_src",
 )
 
 cc_proto(
     name = "tensor_shape",
-    src = "tensor_shape.proto",
+    src = "protos_all_src",
 )
 
 cc_proto(
     name = "versions",
-    src = "versions.proto",
+    src = "protos_all_src",
 )
 
 cc_proto(
     name = "cost_graph",
-    src = "cost_graph.proto",
+    src = "protos_all_src",
     deps = [
         ":tensor_shape_proto",
         ":types_proto",
@@ -221,7 +248,7 @@ cc_proto(
 
 cc_proto(
     name = "resource_handle",
-    src = "resource_handle.proto",
+    src = "protos_all_src",
     deps = [
         ":tensor_shape_proto",
         ":types_proto",
@@ -230,28 +257,32 @@ cc_proto(
 
 cc_proto(
     name = "tensor",
-    src = "tensor.proto",
+    src = "protos_all_src",
     deps = [
         ":resource_handle_proto",
+        ":types_proto",
+        ":tensor_shape_proto",
     ],
 )
 
 cc_proto(
     name = "attr_value",
-    src = "attr_value.proto",
+    src = "protos_all_src",
     deps = [
         ":tensor_proto",
+        ":tensor_shape_proto",
+        ":types_proto",
     ],
 )
 
 cc_proto(
     name = "full_type",
-    src = "full_type.proto",
+    src = "protos_all_src",
 )
 
 cc_proto(
     name = "node_def",
-    src = "node_def.proto",
+    src = "protos_all_src",
     deps = [
         ":attr_value_proto",
         ":full_type_proto",
@@ -259,17 +290,24 @@ cc_proto(
 )
 
 cc_proto(
+    name = "graph_debug_info",
+    src = "protos_all_src",
+)
+
+cc_proto(
     name = "op_def",
-    src = "op_def.proto",
+    src = "protos_all_src",
     deps = [
         ":attr_value_proto",
         ":full_type_proto",
+        ":resource_handle_proto",
+        ":types_proto",
     ],
 )
 
 cc_proto(
     name = "kernel_def",
-    src = "kernel_def.proto",
+    src = "protos_all_src",
     deps = [
         ":attr_value_proto",
     ],
@@ -277,8 +315,9 @@ cc_proto(
 
 cc_proto(
     name = "function",
-    src = "function.proto",
+    src = "protos_all_src",
     deps = [
+        ":attr_value_proto",
         ":node_def_proto",
         ":op_def_proto",
     ],
@@ -286,9 +325,10 @@ cc_proto(
 
 cc_proto(
     name = "graph",
-    src = "graph.proto",
+    src = "protos_all_src",
     deps = [
         ":function_proto",
+        ":graph_debug_info_proto",
         ":node_def_proto",
         ":versions_proto",
     ],
@@ -296,13 +336,16 @@ cc_proto(
 
 cc_proto(
     name = "device_properties",
-    src = "device_properties.proto",
+    src = "protos_all_src",
 )
 
 cc_proto(
     name = "op_performance_data",
-    src = "op_performance_data.proto",
+    src = "protos_all_src",
     deps = [
+        ":tensor_proto",
+        ":tensor_shape_proto",
+        ":types_proto",
         ":attr_value_proto",
         ":device_properties_proto",
     ],
@@ -310,7 +353,7 @@ cc_proto(
 
 cc_proto(
     name = "api_def",
-    src = "api_def.proto",
+    src = "protos_all_src",
     deps = [
         ":attr_value_proto",
     ],
@@ -318,20 +361,53 @@ cc_proto(
 
 cc_proto(
     name = "xplane",
-    src = "xplane.proto",
+    src = "protos_all_src",
 )
 
+cc_proto(
+    name = "summary",
+    src = "protos_all_src",
+    deps = [
+        ":tensor_proto",
+    ],
+)
 
+filegroup(
+    name = "protos_all_src",
+    srcs = [
+        "include/protos/tensor_shape.proto",
+        "include/protos/types.proto",
+        "include/protos/versions.proto",
+        "include/protos/resource_handle.proto",
+        "include/protos/tensor.proto",
+        "include/protos/attr_value.proto",
+        "include/protos/api_def.proto",
+        "include/protos/graph_debug_info.proto",
+        "include/protos/full_type.proto",
+        "include/protos/node_def.proto",
+        "include/protos/op_def.proto",
+        "include/protos/function.proto",
+        "include/protos/graph.proto",
+        "include/protos/kernel_def.proto",
+        "include/protos/device_properties.proto",
+        "include/protos/op_performance_data.proto",
+        "include/protos/summary.proto",
+        "include/protos/xplane.proto",
+    ],
+)
 
 cc_library(
     name = "protos_all",
     visibility = ["//visibility:public"],
     deps = [
         ":api_def_proto",
+        ":graph_debug_info_proto",
         ":graph_proto",
-        ":xplane_proto",
-        ":op_performance_data_proto",
         ":kernel_def_proto",
+        ":op_performance_data_proto",
+        ":summary_proto",
+        ":tensor_proto",
+        ":xplane_proto",
     ],
 )
 

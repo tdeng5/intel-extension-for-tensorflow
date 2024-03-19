@@ -24,7 +24,7 @@ namespace itex {
                               .HostMemory("filter_sizes")                     \
                               .TypeConstraint<T>("T"),                        \
                           ConvBackpropFilterOp<GPUDevice, T, false, false>);  \
-  REGISTER_KERNEL_BUILDER(Name("Conv2DBackpropFilterWithBias")                \
+  REGISTER_KERNEL_BUILDER(Name("_ITEXConv2DBackpropFilterWithBias")           \
                               .Device(DEVICE_GPU)                             \
                               .HostMemory("filter_sizes")                     \
                               .TypeConstraint<T>("T"),                        \
@@ -35,9 +35,10 @@ namespace itex {
   REGISTER_KERNEL_BUILDER(Name("Conv3DBackpropFilterV2")                      \
                               .Device(DEVICE_GPU)                             \
                               .TypeConstraint<T>("T")                         \
-                              .HostMemory("filter_sizes"),                    \
+                              .HostMemory("filter_sizes")                     \
+                              .Priority(1),                                   \
                           ConvBackpropFilterOp<GPUDevice, T>);                \
-  REGISTER_KERNEL_BUILDER(Name("Conv3DBackpropFilterWithBias")                \
+  REGISTER_KERNEL_BUILDER(Name("_ITEXConv3DBackpropFilterWithBias")           \
                               .Device(DEVICE_GPU)                             \
                               .HostMemory("filter_sizes")                     \
                               .TypeConstraint<T>("T"),                        \
@@ -82,6 +83,7 @@ namespace itex {
           .HostMemory("paddings"),                                            \
       ConvBackpropFilterOp<GPUDevice, T, false, true, true>);
 
+TF_CALL_half(REGISTER_KERNEL);
 TF_CALL_GPU_BACKWARD_NUMBER_TYPES(REGISTER_KERNEL);
 
 #define REGISTER_BACKPROP_DOUBLE_KERNEL(T)                                    \

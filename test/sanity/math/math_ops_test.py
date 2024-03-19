@@ -23,6 +23,7 @@ from intel_extension_for_tensorflow.python.test_func import test_util
 
 from absl.testing import parameterized
 import numpy as np
+import tensorflow as tf
 
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
@@ -31,6 +32,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import errors_impl
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gradients
 from tensorflow.python.ops import math_ops
@@ -478,7 +480,7 @@ class ScalarMulTest(test_util.TensorFlowTestCase):
   def testAcceptsIndexedSlices(self):
     values = constant_op.constant([2, 3, 5, 7, 0, -1], shape=[3, 2])
     indices = constant_op.constant([0, 2, 5])
-    x = math_ops.scalar_mul(-3, ops.IndexedSlices(values, indices))
+    x = math_ops.scalar_mul(-3, indexed_slices.IndexedSlices(values, indices))
     with test_util.device(use_gpu=True):
       self.assertAllEqual(
           self.evaluate(x.values), [[-6, -9], [-15, -21], [0, 3]])
@@ -547,7 +549,7 @@ class AddNTest(test_util.TensorFlowTestCase):
             [self.evaluate(g) for g in add_n_grad])
 
   def testIndexedSlices(self):
-    slc = ops.IndexedSlices(
+    slc = indexed_slices.IndexedSlices(
         array_ops.constant([1, 2], shape=[1, 2]), array_ops.constant([1]),
         array_ops.constant([2, 2]))
     slc_as_dense = np.array([[0, 0], [1, 2]])
@@ -756,9 +758,9 @@ class DivAndModTest(test_util.TensorFlowTestCase):
   def testWithPythonValue(self):
     # Test case for https://github.com/tensorflow/tensorflow/issues/39475
     x = math_ops.divide(5, 2)
-    self.assertIsInstance(x, ops.Tensor)
+    self.assertIsInstance(x, tf.Tensor)
     x = math_ops.divide(5, array_ops.constant(2.0))
-    self.assertIsInstance(x, ops.Tensor)
+    self.assertIsInstance(x, tf.Tensor)
 
   def intEdgeTestData(self, dtype):
     """Edge-case test data for integer types."""

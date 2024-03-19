@@ -20,6 +20,8 @@ limitations under the License.
 #include "tensorflow/c/ops.h"
 #include "tensorflow/c/tf_status.h"
 
+void empty_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {}
+
 void unchanged_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   TF_ShapeHandle* handle = TF_NewShapeHandle();
@@ -32,7 +34,7 @@ void unknown_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {
   TF_ShapeInferenceContextSetUnknownShape(ctx, status);
 }
 
-// TODO(itex): Below function only work when tensorflow version >= 2.10.0
+// Below function only work when tensorflow version >= 2.10.0
 // as there is a bug in TF_ShapeInferenceContextGetInput and
 // TF_ShapeInferenceContextSetOutput when index > 0 in tensorflow
 void rnn_forward_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {
@@ -70,4 +72,97 @@ void rnn_forward_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {
   TF_DeleteShapeHandle(i_handle);
   TF_DeleteShapeHandle(output_handle);
   TF_DeleteShapeHandle(unknown_handle);
+}
+
+void layer_norm_shape_fn(TF_ShapeInferenceContext* ctx, TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 0, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 0, handle, status);
+  TF_DeleteShapeHandle(handle);
+  handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 1, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 1, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 2, handle, status);
+  TF_DeleteShapeHandle(handle);
+}
+
+void layer_norm_grad_shape_fn(TF_ShapeInferenceContext* ctx,
+                              TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 0, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 0, handle, status);
+  TF_DeleteShapeHandle(handle);
+  handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 2, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 1, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 2, handle, status);
+  TF_DeleteShapeHandle(handle);
+}
+
+void itex_layer_norm_grad_shape_fn(TF_ShapeInferenceContext* ctx,
+                                   TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 0, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 0, handle, status);
+  TF_DeleteShapeHandle(handle);
+  handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 2, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 1, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 2, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 3, handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 4, handle, status);
+  TF_DeleteShapeHandle(handle);
+}
+
+void apply_adam_with_weight_decay_shape_fn(TF_ShapeInferenceContext* ctx,
+                                           TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 10, handle, status);  // grad
+  TF_ShapeInferenceContextSetOutput(ctx, 0, handle, status);
+}
+
+void rotary_embedding_shape_fn(TF_ShapeInferenceContext* ctx,
+                               TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* q_handle = TF_NewShapeHandle();
+  // [beam*batch, sequence length, embed_dim]
+  TF_ShapeInferenceContextGetInput(ctx, 0, q_handle, status);
+  ITEX_CHECK_EQ(TF_OK, TF_GetCode(status));
+
+  TF_ShapeInferenceContextSetOutput(ctx, 0, q_handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 1, q_handle, status);
+  TF_DeleteShapeHandle(q_handle);
+}
+
+void scaled_dot_product_attention_inf_shape_fn(TF_ShapeInferenceContext* ctx,
+                                               TF_Status* status) {
+  TF_SetStatus(status, TF_OK, "");
+  TF_ShapeHandle* q_handle = TF_NewShapeHandle();
+  TF_ShapeHandle* res_handle = TF_NewShapeHandle();
+  TF_ShapeHandle* n_handle = TF_NewShapeHandle();
+  TF_ShapeHandle* f_handle = TF_NewShapeHandle();
+  TF_ShapeHandle* h_handle = TF_NewShapeHandle();
+  TF_ShapeInferenceContextGetInput(ctx, 0, q_handle, status);
+  TF_ShapeInferenceContextSubshape(ctx, q_handle, 0, 1, res_handle, status);
+  TF_ShapeInferenceContextSubshape(ctx, q_handle, 1, 2, n_handle, status);
+  TF_ShapeInferenceContextSubshape(ctx, q_handle, 2, 3, f_handle, status);
+  TF_ShapeInferenceContextSubshape(ctx, q_handle, 3, 4, h_handle, status);
+  ITEX_CHECK_EQ(TF_OK, TF_GetCode(status));
+
+  TF_ShapeInferenceContextConcatenateShapes(ctx, res_handle, f_handle,
+                                            res_handle, status);
+  TF_ShapeInferenceContextConcatenateShapes(ctx, res_handle, n_handle,
+                                            res_handle, status);
+  TF_ShapeInferenceContextConcatenateShapes(ctx, res_handle, h_handle,
+                                            res_handle, status);
+  TF_ShapeInferenceContextSetOutput(ctx, 0, res_handle, status);
+  TF_DeleteShapeHandle(q_handle);
+  TF_DeleteShapeHandle(res_handle);
+  TF_DeleteShapeHandle(n_handle);
+  TF_DeleteShapeHandle(f_handle);
+  TF_DeleteShapeHandle(h_handle);
 }

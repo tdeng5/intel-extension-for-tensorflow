@@ -17,37 +17,29 @@
 
 set -e
 IMAGE_TYPE=$1
-if [ $IMAGE_TYPE == "gpu" ]
+if [ $IMAGE_TYPE == "xpu" -o $IMAGE_TYPE == "gpu" ]
 then
-        IMAGE_NAME=intel-extension-for-tensorflow:gpu
-        docker build --build-arg UBUNTU_VERSION=20.04 \
-                                --build-arg PYTHON=python3.9 \
-                                --build-arg ICD_VER=22.28.23726.1+i419~u20.04 \
-                                --build-arg LEVEL_ZERO_GPU_VER=1.3.23726.1+i419~u20.04 \
-                                --build-arg LEVEL_ZERO_VER=1.8.1+i755~u20.04 \
-                                --build-arg TF_VER=2.10 \
-                                --build-arg DPCPP_VER=2022.2.0-8734 \
-                                --build-arg MKL_VER=2022.2.0-8748 \
-                                --build-arg TF_PLUGIN_WHEEL=intel_extension_for_tensorflow*.whl \
+        IMAGE_NAME=intel-extension-for-tensorflow:$IMAGE_TYPE
+        docker build --no-cache --build-arg UBUNTU_VERSION=22.04 \
+                                --build-arg ICD_VER=23.30.26918.50-736~22.04 \
+                                --build-arg LEVEL_ZERO_GPU_VER=1.3.26918.50-736~22.04 \
+                                --build-arg LEVEL_ZERO_VER=1.13.1-719~22.04 \
+                                --build-arg LEVEL_ZERO_DEV_VER=1.13.1-719~22.04 \
+                                --build-arg DPCPP_VER=2024.0.0-49819 \
+                                --build-arg MKL_VER=2024.0.0-49656 \
+                                --build-arg CCL_VER=2021.11.0-49156 \
+                                --build-arg PYTHON=python3.10 \
+                                --build-arg TF_VER=2.14 \
+                                --build-arg WHEELS=*.whl \
                                 -t $IMAGE_NAME \
-				-f itex-gpu.Dockerfile .
-elif  [ $IMAGE_TYPE == "cpu-centos" ]
-then
-        IMAGE_NAME=intel-extension-for-tensorflow:cpu-centos
-        docker build --build-arg CENTOS_VER=8 \
-                                --build-arg PY_VER=39 \
-                                --build-arg PYTHON=python3.9 \
-                                --build-arg TF_VER=2.10 \
-                                --build-arg TF_PLUGIN_WHEEL=intel_extension_for_tensorflow*.whl \
-                                -t $IMAGE_NAME \
-                                -f itex-cpu-centos.Dockerfile .
+				-f itex-xpu.Dockerfile .
 else
-        IMAGE_NAME=intel-extension-for-tensorflow:cpu-ubuntu
-        docker build --build-arg UBUNTU_VERSION=20.04 \
-                                --build-arg PYTHON=python3.9 \
-                                --build-arg TF_VER=2.10 \
-                                --build-arg TF_PLUGIN_WHEEL=intel_extension_for_tensorflow*.whl \
+        IMAGE_NAME=intel-extension-for-tensorflow:$IMAGE_TYPE
+        docker build --no-cache --build-arg UBUNTU_VERSION=22.04 \
+                                --build-arg PYTHON=python3.10 \
+                                --build-arg TF_VER=2.14 \
+                                --build-arg WHEELS=*.whl \
                                 -t $IMAGE_NAME \
-                                -f itex-cpu-ubuntu.Dockerfile .
+                                -f itex-cpu.Dockerfile .
 fi
 

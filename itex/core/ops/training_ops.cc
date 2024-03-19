@@ -15,18 +15,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/c/ops.h"
-#include "tensorflow/c/tf_status.h"
-
 #include "itex/core/ops/shape_inference_fns.h"
 #include "itex/core/ops/utils/logging.h"
 #include "itex/core/ops/utils/status.h"
+#include "tensorflow/c/ops.h"
+#include "tensorflow/c/tf_status.h"
 
-void Register_FusedApplyMomentumOp() {
+void Register_ITEXFusedApplyMomentumOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedApplyMomentum");
+        TF_NewOpDefinitionBuilder("_ITEXFusedApplyMomentum");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "accum: Ref(T)");
@@ -47,15 +46,15 @@ void Register_FusedApplyMomentumOp() {
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedApplyMomentum op registration failed: ";
+        << "_ITEXFusedApplyMomentum op registration failed: ";
   }
 }
 
-void Register_FusedResourceApplyMomentumOp() {
+void Register_ITEXFusedResourceApplyMomentumOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedResourceApplyMomentum");
+        TF_NewOpDefinitionBuilder("_ITEXFusedResourceApplyMomentum");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "accum: resource");
@@ -75,15 +74,15 @@ void Register_FusedResourceApplyMomentumOp() {
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedResourceApplyMomentum op registration failed: ";
+        << "_ITEXFusedResourceApplyMomentum op registration failed: ";
   }
 }
 
-void Register_FusedApplyAdamOp() {
+void Register_ITEXFusedApplyAdamOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedApplyAdam");
+        TF_NewOpDefinitionBuilder("_ITEXFusedApplyAdam");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: Ref(T)");
@@ -109,15 +108,15 @@ void Register_FusedApplyAdamOp() {
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedApplyAdam op registration failed: ";
+        << "_ITEXFusedApplyAdam op registration failed: ";
   }
 }
 
-void Register_FusedResourceApplyAdamOp() {
+void Register_ITEXFusedResourceApplyAdamOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedResourceApplyAdam");
+        TF_NewOpDefinitionBuilder("_ITEXFusedResourceApplyAdam");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: resource");
@@ -142,15 +141,15 @@ void Register_FusedResourceApplyAdamOp() {
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedResourceApplyAdam op registration failed: ";
+        << "_ITEXFusedResourceApplyAdam op registration failed: ";
   }
 }
 
-void Register_ApplyAdamWithWeightDecayOp() {
+void Register_ITEXApplyAdamWithWeightDecayOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("ApplyAdamWithWeightDecay");
+        TF_NewOpDefinitionBuilder("ITEXApplyAdamWithWeightDecay");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: Ref(T)");
@@ -162,25 +161,27 @@ void Register_ApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "grad: T");
     TF_OpDefinitionBuilderAddOutput(op_builder, "out: Ref(T)");
 
     TF_OpDefinitionBuilderAddAttr(op_builder, "T: numbertype");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
-    TF_OpDefinitionBuilderSetShapeInferenceFunction(op_builder,
-                                                    &unknown_shape_fn);
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
+    TF_OpDefinitionBuilderSetShapeInferenceFunction(
+        op_builder, &apply_adam_with_weight_decay_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "ApplyAdamWithWeightDecay op registration failed: ";
+        << "ITEXApplyAdamWithWeightDecay op registration failed: ";
   }
 }
 
-void Register_ResourceApplyAdamWithWeightDecayOp() {
+void Register_ITEXResourceApplyAdamWithWeightDecayOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("ResourceApplyAdamWithWeightDecay");
+        TF_NewOpDefinitionBuilder("ITEXResourceApplyAdamWithWeightDecay");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: resource");
@@ -192,24 +193,26 @@ void Register_ResourceApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "grad: T");
 
     TF_OpDefinitionBuilderAddAttr(op_builder, "T: numbertype");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
     TF_OpDefinitionBuilderSetShapeInferenceFunction(op_builder,
-                                                    &unknown_shape_fn);
+                                                    &empty_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "ResourceApplyAdamWithWeightDecay op registration failed: ";
+        << "ITEXResourceApplyAdamWithWeightDecay op registration failed: ";
   }
 }
 
-void Register_FusedApplyAdamWithWeightDecayOp() {
+void Register_ITEXFusedApplyAdamWithWeightDecayOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedApplyAdamWithWeightDecay");
+        TF_NewOpDefinitionBuilder("_ITEXFusedApplyAdamWithWeightDecay");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: Ref(T)");
@@ -221,6 +224,7 @@ void Register_FusedApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: Ref(T)");
     TF_OpDefinitionBuilderAddInput(op_builder, "mul_left: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "mul_right: T");
     TF_OpDefinitionBuilderAddInput(op_builder,
@@ -230,21 +234,22 @@ void Register_FusedApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddAttr(op_builder, "T: numbertype");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "num_addn_inputs: int >= 0 = 0");
     TF_OpDefinitionBuilderAddAttr(op_builder, "fused_ops: list(string) = []");
     TF_OpDefinitionBuilderSetShapeInferenceFunction(op_builder,
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedApplyAdamWithWeightDecay op registration failed: ";
+        << "_ITEXFusedApplyAdamWithWeightDecay op registration failed: ";
   }
 }
 
-void Register_FusedResourceApplyAdamWithWeightDecayOp() {
+void Register_ITEXFusedResourceApplyAdamWithWeightDecayOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("_FusedResourceApplyAdamWithWeightDecay");
+        TF_NewOpDefinitionBuilder("_ITEXFusedResourceApplyAdamWithWeightDecay");
 
     TF_OpDefinitionBuilderAddInput(op_builder, "var: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "m: resource");
@@ -256,6 +261,7 @@ void Register_FusedResourceApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: resource");
     TF_OpDefinitionBuilderAddInput(op_builder, "mul_left: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "mul_right: T");
     TF_OpDefinitionBuilderAddInput(op_builder,
@@ -264,21 +270,88 @@ void Register_FusedResourceApplyAdamWithWeightDecayOp() {
     TF_OpDefinitionBuilderAddAttr(op_builder, "T: numbertype");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
     TF_OpDefinitionBuilderAddAttr(op_builder, "num_addn_inputs: int >= 0 = 0");
     TF_OpDefinitionBuilderAddAttr(op_builder, "fused_ops: list(string) = []");
     TF_OpDefinitionBuilderSetShapeInferenceFunction(op_builder,
                                                     &unknown_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "_FusedResourceApplyAdamWithWeightDecay op registration failed: ";
+        << "_ITEXFusedResourceApplyAdamWithWeightDecay op registration "
+           "failed: ";
   }
 }
 
-void RegisterRMSPropComputeRMSOp() {
+void Register_ITEXApplyLAMBOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("ApplyRMSPropComputeRMS");
+        TF_NewOpDefinitionBuilder("ITEXApplyLAMB");
+
+    TF_OpDefinitionBuilderAddInput(op_builder, "var: Ref(T)");
+    TF_OpDefinitionBuilderAddInput(op_builder, "m: Ref(T)");
+    TF_OpDefinitionBuilderAddInput(op_builder, "v: Ref(T)");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta1_power: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta2_power: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "lr: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta1: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: Ref(T)");
+    TF_OpDefinitionBuilderAddInput(op_builder, "grad: T");
+    TF_OpDefinitionBuilderAddOutput(op_builder, "out: Ref(T)");
+
+    TF_OpDefinitionBuilderAddAttr(op_builder, "T: {float}");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_lamb: bool = true");
+    TF_OpDefinitionBuilderSetShapeInferenceFunction(
+        op_builder, &apply_adam_with_weight_decay_shape_fn);
+    TF_RegisterOpDefinition(op_builder, status.get());
+    ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
+        << "ITEXApplyLAMB op registration failed: ";
+  }
+}
+
+void Register_ITEXResourceApplyLAMBOp() {
+  itex::StatusUniquePtr status(TF_NewStatus());
+  {
+    TF_OpDefinitionBuilder* op_builder =
+        TF_NewOpDefinitionBuilder("ITEXResourceApplyLAMB");
+
+    TF_OpDefinitionBuilderAddInput(op_builder, "var: resource");
+    TF_OpDefinitionBuilderAddInput(op_builder, "m: resource");
+    TF_OpDefinitionBuilderAddInput(op_builder, "v: resource");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta1_power: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta2_power: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "lr: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta1: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "beta2: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "epsilon: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "weight_decay: T");
+    TF_OpDefinitionBuilderAddInput(op_builder, "vhat: resource");
+    TF_OpDefinitionBuilderAddInput(op_builder, "grad: T");
+
+    TF_OpDefinitionBuilderAddAttr(op_builder, "T: {float}");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_locking: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_nesterov: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_amsgrad: bool = false");
+    TF_OpDefinitionBuilderAddAttr(op_builder, "use_lamb: bool = true");
+    TF_OpDefinitionBuilderSetShapeInferenceFunction(op_builder,
+                                                    &empty_shape_fn);
+    TF_RegisterOpDefinition(op_builder, status.get());
+    ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
+        << "ITEXResourceApplyLAMB op registration failed: ";
+  }
+}
+
+void Register_ITEXApplyRMSPropComputeRMSOp() {
+  itex::StatusUniquePtr status(TF_NewStatus());
+  {
+    TF_OpDefinitionBuilder* op_builder =
+        TF_NewOpDefinitionBuilder("_ITEXApplyRMSPropComputeRMS");
     TF_OpDefinitionBuilderAddInput(op_builder, "ms: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "rho: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "grad: T");
@@ -288,15 +361,15 @@ void RegisterRMSPropComputeRMSOp() {
                                                     &unchanged_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "RMSPropComputeRMS op registration failed: ";
+        << "_ITEXApplyRMSPropComputeRMS op registration failed: ";
   }
 }
 
-void RegisterRMSPropVarUpdateOp() {
+void Register_ITEXApplyRMSPropVarUpdateOp() {
   itex::StatusUniquePtr status(TF_NewStatus());
   {
     TF_OpDefinitionBuilder* op_builder =
-        TF_NewOpDefinitionBuilder("ApplyRMSPropVarUpdate");
+        TF_NewOpDefinitionBuilder("_ITEXApplyRMSPropVarUpdate");
     TF_OpDefinitionBuilderAddInput(op_builder, "var: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "ms: T");
     TF_OpDefinitionBuilderAddInput(op_builder, "lr: T");
@@ -308,6 +381,6 @@ void RegisterRMSPropVarUpdateOp() {
                                                     &unchanged_shape_fn);
     TF_RegisterOpDefinition(op_builder, status.get());
     ITEX_CHECK_EQ(TF_OK, TF_GetCode(status.get()))
-        << "RMSPropVarUpdate op registration failed: ";
+        << "_ITEXApplyRMSPropVarUpdate op registration failed: ";
   }
 }

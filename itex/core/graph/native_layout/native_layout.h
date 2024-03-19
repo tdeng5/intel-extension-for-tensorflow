@@ -24,6 +24,8 @@ limitations under the License.
 #include "itex/core/graph/utils/grappler_item.h"
 #include "itex/core/graph/utils/layout_utils.h"
 #include "itex/core/graph/utils/node_type_attr_map.h"
+#include "itex/core/graph/utils/utils.h"
+#include "itex/core/utils/env_var.h"
 #include "itex/core/utils/node_def_util.h"
 #include "protos/graph.pb.h"
 
@@ -53,15 +55,16 @@ typedef struct {
   std::function<void(const utils::MutableNodeView*, NodeDef*)> copy_attrs;
   // A rule under which to rewrite this node
   std::function<bool(const utils::MutableNodeView&)> rewrite_rule;
+  std::function<void(NodeDef*)> post_process;
 } NativeFormatInfo;
 
 const NativeFormatInfo* CheckForNodeNativeFormat(
-    const utils::MutableNodeView& node_view);
+    OptimizerContext* opt_ctx, const utils::MutableNodeView& node_view);
 
 Status RewriteNode(NativeFormatContext* ctx, int node_index,
                    const NativeFormatInfo* ri);
 
-Status RunNativeLayout(const char* device_name, const GrapplerItem& item,
+Status RunNativeLayout(OptimizerContext* opt_ctx, const GrapplerItem& item,
                        const GraphDef& graph_def, GraphDef* optimized_graph);
 
 }  // namespace graph

@@ -5,6 +5,24 @@ package(
 )
 
 itex_xpu_library(
+    name = "control_flow_ops",
+    srcs = [
+        "control_flow_ops.cc",
+    ],
+    hdrs = [
+        "//itex/core/kernels/common:control_flow_hdrs",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//itex:core",
+        "//itex/core/devices:xpu_device_util",
+    ],
+    alwayslink = True,
+)
+
+itex_xpu_library(
     name = "conv_ops",
     srcs = [
         "conv_grad_filter_ops.cc",
@@ -52,6 +70,39 @@ itex_xpu_library(
     deps = [
         "//itex:core",
         "//itex/core/kernels/common:fused_batch_norm_functor",
+    ],
+    alwayslink = True,
+)
+
+itex_xpu_library(
+    name = "fused_binary_op",
+    srcs = ["fused_binary_op.cc"],
+    hdrs = [
+        "fused_binary_op.h",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//itex:core",
+        "//itex/core/kernels/common:cwise_ops_lib",
+        "//itex/core/kernels/common:fill_functor",
+    ],
+    alwayslink = True,
+)
+
+itex_xpu_library(
+    name = "mha_op",
+    srcs = ["mha_op.cc"],
+    hdrs = [
+        "mha_op.h",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":cpu_blas",
+        "//itex:core",
     ],
     alwayslink = True,
 )
@@ -118,18 +169,6 @@ itex_xpu_library(
     deps = [
         "//itex:core",
         "//itex/core/devices:xpu_device_util",
-    ],
-    alwayslink = True,
-)
-
-itex_xpu_library(
-    name = "cast_op",
-    srcs = ["cast_op.cc"],
-    copts = tf_copts(),
-    linkstatic = 1,
-    visibility = ["//visibility:public"],
-    deps = [
-        "//itex:core",
     ],
     alwayslink = True,
 )
@@ -211,6 +250,23 @@ itex_xpu_library(
 )
 
 itex_xpu_library(
+    name = "fused_random_op",
+    srcs = ["fused_random_op.cc"],
+    hdrs = [
+        "random_op_cpu.h",
+        "//itex/core/kernels/common:random_hdrs",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//itex:core",
+        "//itex/core/utils/lib/random:guarded_philox_random",
+    ],
+    alwayslink = True,
+)
+
+itex_xpu_library(
     name = "resize_bilinear_op",
     srcs = ["resize_bilinear_op.cc"],
     copts = tf_copts(),
@@ -271,6 +327,7 @@ itex_xpu_library(
     name = "quantized_matmul",
     srcs = ["quantized_matmul.cc"],
     hdrs = [
+        "//itex/core/kernels/common:cast_hdrs",
         "//itex/core/kernels/common:noop_hdrs",
         "//itex/core/kernels/common:quantized_matmul_common_hdrs",
         "//itex/core/kernels/onednn/block:quantized_hdrs",
@@ -289,6 +346,7 @@ itex_xpu_library(
     name = "quantized_conv",
     srcs = ["quantized_conv_ops.cc"],
     hdrs = [
+        "//itex/core/kernels/common:cast_hdrs",
         "//itex/core/kernels/common:conv_hdrs",
         "//itex/core/kernels/common:noop_hdrs",
         "//itex/core/kernels/common:quantized_conv_hdrs",
@@ -359,14 +417,49 @@ itex_xpu_library(
     alwayslink = True,
 )
 
+itex_xpu_library(
+    name = "einsum_op",
+    srcs = ["einsum_op.cc"],
+    hdrs = [
+        "//itex/core/kernels/common:einsum_hdrs",
+        "//itex/core/kernels/common:host_data_cache_hdrs",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//itex:core",
+    ],
+    alwayslink = True,
+)
+
+itex_xpu_library(
+    name = "cpu_blas",
+    srcs = ["cpu_blas.cc"],
+    hdrs = [
+        "cpu_blas.h",
+    ],
+    copts = tf_copts(),
+    linkstatic = 1,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//itex:core",
+    ],
+    alwayslink = True,
+)
+
 CPU_KERNELS = [
     ":aggregate_ops",
     ":binary_op",
     ":batch_matmul_op",
-    ":cast_op",
+    ":control_flow_ops",
     ":conv_ops",
     ":dequantize_op",
+    ":einsum_op",
     ":fused_batch_norm_op",
+    ":fused_binary_op",
+    ":mha_op",
+    ":fused_random_op",
     ":gru_ops",
     ":instance_norm_ops",
     ":layer_norm_ops",
@@ -383,6 +476,7 @@ CPU_KERNELS = [
     ":slice_op",
     ":softmax_op",
     ":transpose_op",
+    ":cpu_blas",
 ]
 
 itex_xpu_library(
@@ -397,7 +491,9 @@ itex_xpu_library(
         "//itex:core",
         "//itex/core/kernels/legacy:legacy_kernels",
         "//itex/core/kernels/onednn:onednn_kernels",
-        "//itex/core/kernels/onednn_graph:onednn_graph_op",
-    ] + CPU_KERNELS,
+    ] + select({
+        "//third_party/onednn:build_with_onednn_graph": ["//itex/core/kernels/onednn_graph:onednn_graph_op"],
+        "//conditions:default": [],
+    }) + CPU_KERNELS,
     alwayslink = True,
 )

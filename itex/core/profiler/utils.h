@@ -23,8 +23,8 @@ limitations under the License.
 #define ITEX_CORE_PROFILER_UTILS_H_
 
 #include <sys/syscall.h>
-
 #include <unistd.h>
+
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -45,6 +45,16 @@ limitations under the License.
 #define NSEC_IN_SEC 1000000000
 
 namespace utils {
+
+std::atomic<int> g_immediate_command_list_enabled(1);
+
+inline bool IsImmediateCommandListEnabled() {
+  return g_immediate_command_list_enabled.load(std::memory_order_acquire);
+}
+
+inline void ImmediateCommandListDisabled() {
+  g_immediate_command_list_enabled.store(0, std::memory_order_release);
+}
 
 struct Comparator {
   template <typename T>

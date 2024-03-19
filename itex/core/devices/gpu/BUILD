@@ -2,28 +2,32 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+load("//itex:itex.bzl", "cc_library", "if_using_nextpluggable_device")
+
 cc_library(
     name = "eigen_runtime_impl",
-    srcs = ["eigen_dpcpp_runtime.cc"],
+    srcs = ["eigen_itex_gpu_runtime.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         "//itex/core/utils:logging",
-        "//third_party/build_option/dpcpp:eigen_dpcpp_header",
+        "//third_party/build_option/dpcpp:eigen_itex_gpu_header",
         "@com_google_absl//absl/synchronization",
-        "@eigen_archive//:eigen",
+        "@itex_eigen_archive//:eigen",
     ],
     alwayslink = True,
 )
 
 cc_library(
-    name = "dpcpp_runtime_imp",
-    srcs = ["dpcpp_runtime.cc"],
+    name = "itex_gpu_runtime_imp",
+    srcs = ["itex_gpu_runtime.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         ":eigen_runtime_impl",
         "//itex/core/devices:xpu_device_util",
         "//itex/core/utils:logging",
-        "//third_party/build_option/dpcpp:dpcpp_header",
+        "//third_party/build_option/dpcpp:itex_gpu_header",
         "@com_google_absl//absl/synchronization",
-        "@eigen_archive//:eigen",
+        "@itex_eigen_archive//:eigen",
     ],
     alwayslink = True,
 )
@@ -33,18 +37,28 @@ cc_library(
     srcs = ["gpu_device_plugin.cc"],
     hdrs = [
         "gpu_device_plugin.h",
-        "gpu_pool_allocator.h",
     ],
     linkstatic = 1,
     visibility = ["//visibility:public"],
     deps = [
-        ":dpcpp_runtime_imp",
-        "//itex/core/devices:bfc_allocator",
-        "//itex/core/utils:logging",
-        "//third_party/build_option/dpcpp:dpcpp_header",
+        ":gpu_pool_allocator",
         "@local_config_tf//:tf_header_lib",
     ],
     alwayslink = True,
+)
+
+cc_library(
+    name = "gpu_pool_allocator",
+    hdrs = [
+        "gpu_pool_allocator.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":itex_gpu_runtime_imp",
+        "//itex/core/devices:bfc_allocator",
+        "//itex/core/utils:logging",
+        "//third_party/build_option/dpcpp:itex_gpu_header",
+    ],
 )
 
 cc_library(
@@ -53,9 +67,9 @@ cc_library(
     hdrs = ["gpu_info.h"],
     visibility = ["//visibility:public"],
     deps = [
-        "//third_party/build_option/dpcpp:dpcpp_header",
+        "//third_party/build_option/dpcpp:itex_gpu_header",
         "//third_party/eigen3",
-        "@eigen_archive//:eigen",
+        "@itex_eigen_archive//:eigen",
         "@local_config_tf//:tf_header_lib",
     ],
     alwayslink = True,
@@ -64,7 +78,10 @@ cc_library(
 cc_library(
     name = "eigen_stream_device",
     srcs = ["eigen_stream_device.cc"],
-    hdrs = ["eigen_stream_device.h"],
+    hdrs = [
+        "eigen_stream_device.h",
+        "gpu_device_plugin.h",
+    ],
     linkstatic = 1,
     visibility = ["//visibility:public"],
     deps = [
@@ -76,9 +93,11 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/types:optional",
-        "@eigen_archive//:eigen",
+        "@itex_eigen_archive//:eigen",
         "@local_config_tf//:tf_header_lib",
-    ],
+    ] + if_using_nextpluggable_device(
+        ["//third_party/build_option/dpcpp:itex_gpu_header"],
+    ),
     alwayslink = True,
 )
 

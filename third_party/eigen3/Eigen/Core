@@ -1,11 +1,10 @@
+#ifndef INTEL_GPU_ONLY
+#undef EIGEN_USE_GPU
+#undef EIGEN_USE_DPCPP
+#else
 #ifdef INTEL_COMMON
 #undef EIGEN_USE_GPU
 #undef EIGEN_USE_DPCPP
-#endif
-#ifndef INTEL_COMMON
-#ifndef INTEL_CPU_ONLY
-#define EIGEN_USE_DPCPP 1
-#define EIGEN_USE_GPU 1
 #endif
 #endif
 

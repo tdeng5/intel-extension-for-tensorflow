@@ -31,10 +31,8 @@ limitations under the License.
 
 namespace itex {
 
-using ConvBwdInputDesc = dnnl::convolution_backward_data::desc;
 using ConvBwdInputPd = dnnl::convolution_backward_data::primitive_desc;
 using ConvBwdInputPrimitive = dnnl::convolution_backward_data;
-using ConvBwdFilterDesc = dnnl::convolution_backward_weights::desc;
 using ConvBwdFilterPd = dnnl::convolution_backward_weights::primitive_desc;
 using ConvBwdFilterPrimitive = dnnl::convolution_backward_weights;
 using dnnl::memory;
@@ -245,11 +243,11 @@ class ConvBackpropFilterOp
         const int kPadIndex = kOutbpropIdx + 1;
         conv_util.InitPadWithFusion(kPadIndex, true);
       }
-
+      bool is_grouped_convolution;
       conv_util.InitFwdDimensions(
           src_shape, filter_shape, &fwd_src_dims, &fwd_filter_dims,
           &stride_dims, &dilation_dims, &dst_dims_tf, &dst_dims_onednn,
-          &pad_left_dims, &pad_right_dims);
+          &pad_left_dims, &pad_right_dims, &is_grouped_convolution);
       conv_util.GetInputDimension(diff_dst_shape, &diff_dst_dims);
 
       OneDnnTensorFormat data_format_onednn =
@@ -270,20 +268,34 @@ class ConvBackpropFilterOp
 
       const std::vector<DNNL_SIZE_DTYPE>& diff_filter_array =
           this->is_conv2d_
-              ? (is_depthwise ? std::vector<DNNL_SIZE_DTYPE>(
-                                    {diff_filter_dims
-                                         [FilterGroupDims::GROUP_FILTER_DIM_H],
-                                     diff_filter_dims
-                                         [FilterGroupDims::GROUP_FILTER_DIM_W],
-                                     diff_filter_dims
-                                         [FilterGroupDims::GROUP_FILTER_DIM_G],
-                                     diff_filter_dims
-                                         [FilterGroupDims::GROUP_FILTER_DIM_O]})
-                              : std::vector<DNNL_SIZE_DTYPE>(
-                                    {diff_filter_dims[DimensionIndex::Dim_H],
-                                     diff_filter_dims[DimensionIndex::Dim_W],
-                                     diff_filter_dims[DimensionIndex::Dim_I],
-                                     diff_filter_dims[DimensionIndex::Dim_O]}))
+              ? (is_depthwise
+                     ? std::vector<DNNL_SIZE_DTYPE>(
+                           {diff_filter_dims
+                                [FilterGroupDims::GROUP_FILTER_DIM_H],
+                            diff_filter_dims
+                                [FilterGroupDims::GROUP_FILTER_DIM_W],
+                            diff_filter_dims
+                                [FilterGroupDims::GROUP_FILTER_DIM_G],
+                            diff_filter_dims
+                                [FilterGroupDims::GROUP_FILTER_DIM_O]})
+                     : (is_grouped_convolution
+                            ? std::vector<DNNL_SIZE_DTYPE>(
+                                  {diff_filter_dims
+                                       [FilterGroupDims::GROUP_FILTER_DIM_H],
+                                   diff_filter_dims
+                                       [FilterGroupDims::GROUP_FILTER_DIM_W],
+                                   diff_filter_dims
+                                       [FilterGroupDims::GROUP_FILTER_DIM_I],
+                                   diff_filter_dims[FilterGroupDims::
+                                                        GROUP_FILTER_DIM_O] *
+                                       diff_filter_dims
+                                           [FilterGroupDims::
+                                                GROUP_FILTER_DIM_G]})
+                            : std::vector<DNNL_SIZE_DTYPE>(
+                                  {diff_filter_dims[DimensionIndex::Dim_H],
+                                   diff_filter_dims[DimensionIndex::Dim_W],
+                                   diff_filter_dims[DimensionIndex::Dim_I],
+                                   diff_filter_dims[DimensionIndex::Dim_O]})))
               : std::vector<DNNL_SIZE_DTYPE>(
                     {diff_filter_dims[DimensionIndex3D::Dim3d_D],
                      diff_filter_dims[DimensionIndex3D::Dim3d_H],
@@ -295,8 +307,9 @@ class ConvBackpropFilterOp
           {diff_filter_array.data(), diff_filter_array.size()});
 
       const auto diff_filter_format =
-          this->is_conv2d_ ? (is_depthwise ? memory::format_tag::hwigo
-                                           : memory::format_tag::hwio)
+          this->is_conv2d_ ? (is_depthwise || is_grouped_convolution
+                                  ? memory::format_tag::hwigo
+                                  : memory::format_tag::hwio)
                            : memory::format_tag::dhwio;
       auto diff_filter_md =
           memory::desc(diff_filter_dims, OneDnnType<T>(), diff_filter_format);
@@ -319,40 +332,34 @@ class ConvBackpropFilterOp
           memory::desc(diff_dst_dims, OneDnnType<T>(), format_tag_opt);
 
       // Create descriptor and primitive descriptor for convolution forward.
-      ConvFwdDesc fwd_desc = ConvFwdDesc(
-          prop_kind::forward, dnnl::algorithm::convolution_direct,
-          fwd_src_md_opt, diff_filter_md_prefer, diff_dst_md_opt, stride_dims,
-          dilation_dims, pad_left_dims, pad_right_dims);
-
-      if (bias_enabled) {
-        fwd_desc =
-            ConvFwdDesc(prop_kind::forward, dnnl::algorithm::convolution_direct,
-                        fwd_src_md_opt, diff_filter_md_prefer, diff_bias_md,
-                        diff_dst_md_opt, stride_dims, dilation_dims,
-                        pad_left_dims, pad_right_dims);
-      }
-
-      // Create descriptor and primitive descriptor for convolution bwd filter.
-      ConvBwdFilterDesc bwd_filter_desc =
-          ConvBwdFilterDesc(dnnl::algorithm::convolution_direct, fwd_src_md_opt,
-                            diff_filter_md_prefer, diff_dst_md_opt, stride_dims,
-                            dilation_dims, pad_left_dims, pad_right_dims);
 
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       if (std::is_same<T, float>::value) {
         attr.set_fpmath_mode(this->fp32_math_mode_);
       }
+      ConvFwdPd fwd_pd;
+      ConvBwdFilterPd bwd_filter_pd;
       if (bias_enabled) {
-        bwd_filter_desc = ConvBwdFilterDesc(
-            dnnl::algorithm::convolution_direct, fwd_src_md_opt,
+        fwd_pd = ConvFwdPd(onednn_engine, prop_kind::forward,
+                           dnnl::algorithm::convolution_direct, fwd_src_md_opt,
+                           diff_filter_md_prefer, diff_bias_md, diff_dst_md_opt,
+                           stride_dims, dilation_dims, pad_left_dims,
+                           pad_right_dims, attr);
+        bwd_filter_pd = ConvBwdFilterPd(
+            onednn_engine, dnnl::algorithm::convolution_direct, fwd_src_md_opt,
             diff_filter_md_prefer, diff_bias_md, diff_dst_md_opt, stride_dims,
-            dilation_dims, pad_left_dims, pad_right_dims);
+            dilation_dims, pad_left_dims, pad_right_dims, fwd_pd, attr);
+      } else {
+        fwd_pd = ConvFwdPd(onednn_engine, prop_kind::forward,
+                           dnnl::algorithm::convolution_direct, fwd_src_md_opt,
+                           diff_filter_md_prefer, diff_dst_md_opt, stride_dims,
+                           dilation_dims, pad_left_dims, pad_right_dims, attr);
+        bwd_filter_pd = ConvBwdFilterPd(
+            onednn_engine, dnnl::algorithm::convolution_direct, fwd_src_md_opt,
+            diff_filter_md_prefer, diff_dst_md_opt, stride_dims, dilation_dims,
+            pad_left_dims, pad_right_dims, fwd_pd, attr);
       }
-
-      ConvFwdPd fwd_pd = ConvFwdPd(fwd_desc, attr, onednn_engine);
-      ConvBwdFilterPd bwd_filter_pd =
-          ConvBwdFilterPd(bwd_filter_desc, attr, onednn_engine, fwd_pd);
 
       Tensor scratchpad_tensor;
       int64 scratchpad_size =
@@ -449,6 +456,7 @@ class ConvBackpropFilterOp
       // Create convolution backward filter primitive and add it to the net.
       primitive bwd_filter_primitive = ConvBwdFilterPrimitive(bwd_filter_pd);
       bwd_filter_primitive.execute(onednn_stream, bwd_filter_primitive_args);
+      primitive fwd_primitive = dnnl::convolution_forward(fwd_pd);
 
       if (is_diff_filter_reordered) {
         ReorderMemory(*context, &diff_filter_mem_reordered, &diff_filter_mem,
@@ -502,7 +510,6 @@ class ConvBackpropInputOp
       } else {
         src_shape = src_sizes_tensor.shape();
       }
-
       OneDnnConvUtil conv_util(context, this->data_format_, this->strides_,
                                this->dilations_, this->padding_,
                                this->explicit_paddings_, this->is_conv2d_,
@@ -542,11 +549,12 @@ class ConvBackpropInputOp
       memory::dims pad_left_dims, pad_right_dims, dilation_dims, stride_dims,
           bias_dims;
       memory::dims dst_dims_tf, dst_dims_onednn;
+      bool is_grouped_convolution;
 
       conv_util.InitFwdDimensions(
           src_shape, filter_shape, &fwd_src_dims, &fwd_filter_dims,
           &stride_dims, &dilation_dims, &dst_dims_tf, &dst_dims_onednn,
-          &pad_left_dims, &pad_right_dims);
+          &pad_left_dims, &pad_right_dims, &is_grouped_convolution);
       conv_util.GetInputDimension(diff_dst_shape, &diff_dst_dims);
 
       // OneDNN dilations start from 0.
@@ -565,8 +573,9 @@ class ConvBackpropInputOp
       memory::format_tag data_layout =
           OneDnnTensorFormatToTag(data_format_onednn);
       const auto filter_format = this->is_conv2d_
-                                     ? (is_depthwise ? memory::format_tag::hwigo
-                                                     : memory::format_tag::hwio)
+                                     ? (is_depthwise || is_grouped_convolution
+                                            ? memory::format_tag::hwigo
+                                            : memory::format_tag::hwio)
                                      : memory::format_tag::dhwio;
       auto filter_md =
           memory::desc(fwd_filter_dims, OneDnnType<T>(), filter_format);
@@ -589,27 +598,20 @@ class ConvBackpropInputOp
       auto diff_src_md_opt =
           memory::desc(diff_src_dims, OneDnnType<T>(), format_tag_opt);
 
-      // Create descriptor and primitive descriptor for convolution forward.
-      ConvFwdDesc fwd_desc = ConvFwdDesc(
-          prop_kind::forward, dnnl::algorithm::convolution_direct,
-          diff_src_md_opt, filter_md_prefer, diff_dst_md_opt, stride_dims,
-          dilation_dims, pad_left_dims, pad_right_dims);
-      // Create descriptor and primitive descriptor for convolution bwd
-      // filter.
-      ConvBwdInputDesc bwd_input_desc =
-          ConvBwdInputDesc(dnnl::algorithm::convolution_direct, diff_src_md_opt,
-                           filter_md_prefer, diff_dst_md_opt, stride_dims,
-                           dilation_dims, pad_left_dims, pad_right_dims);
-
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       if (std::is_same<T, float>::value) {
         attr.set_fpmath_mode(this->fp32_math_mode_);
       }
-
-      ConvFwdPd fwd_pd = ConvFwdPd(fwd_desc, attr, onednn_engine);
-      ConvBwdInputPd bwd_input_pd =
-          ConvBwdInputPd(bwd_input_desc, attr, onednn_engine, fwd_pd);
+      ConvFwdPd fwd_pd =
+          ConvFwdPd(onednn_engine, prop_kind::forward,
+                    dnnl::algorithm::convolution_direct, diff_src_md_opt,
+                    filter_md_prefer, diff_dst_md_opt, stride_dims,
+                    dilation_dims, pad_left_dims, pad_right_dims, attr);
+      ConvBwdInputPd bwd_input_pd = ConvBwdInputPd(
+          onednn_engine, dnnl::algorithm::convolution_direct, diff_src_md_opt,
+          filter_md_prefer, diff_dst_md_opt, stride_dims, dilation_dims,
+          pad_left_dims, pad_right_dims, fwd_pd, attr);
 
       Tensor scratchpad_tensor;
       int64 scratchpad_size =
@@ -693,6 +695,7 @@ class ConvBackpropInputOp
       // Create convolution backward input primitive and add it to the net.
       primitive bwd_input_primitive = ConvBwdInputPrimitive(bwd_input_pd);
       bwd_input_primitive.execute(onednn_stream, bwd_input_primitive_args);
+      primitive fwd_primitive = dnnl::convolution_forward(fwd_pd);
 
       // reorder back if needed
       if (data_layout != format_tag_opt) {

@@ -26,152 +26,96 @@ limitations under the License.
 #include "itex/core/utils/attr_value_util.h"
 #include "itex/core/utils/types.h"
 
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif
+
 namespace itex {
 namespace graph {
 
 namespace {
 namespace protobuf = ::google::protobuf;
 
-const std::vector<NativeFormatInfo>* GetNativeFormatInfo() {
+std::vector<NativeFormatInfo>* GetCPUEigenNativeFormatInfo() {
   static std::vector<NativeFormatInfo> rinfo{
-      {"_FusedBatchMatMulV2", "_ITEXFusedBatchMatMulV2",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
-      {"_FusedBatchNormEx", "_ITEXFusedBatchNormEx", CopyAttrsAll,
-       RewriteFusedBatchNormEx},
-      {"_FusedBatchNormExGrad", "_ITEXFusedBatchNormExGrad", CopyAttrsAll,
-       RewriteFusedBatchNormExGrad},
-      {"_FusedConv2DWithSum", "_ITEXFusedConv2DWithSum",
-       CopyAttrsAllCheckConstFilter, RewriteFusedConv},
-      {"_FusedMatMulWithSum", "_ITEXFusedMatMulWithSum",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
-      {"_PadWithConv2D", "_ITEXPadWithConv2D", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"_PadWithConv3D", "_ITEXPadWithConv3D", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"_PadWithFusedConv2D", "_ITEXPadWithFusedConv2D",
-       CopyAttrsAllCheckConstFilter, RewriteFusedConv},
-      {"_PadWithFusedConv3D", "_ITEXPadWithFusedConv3D",
-       CopyAttrsAllCheckConstFilter, RewriteFusedConv},
-      {"AddN", "_ITEXAddN", CopyAttrsAll, AlwaysRewrite},
+      // Proper OP
+      // {"AddN", "_ITEXAddN", CopyAttrsAll, AlwaysRewrite},
       {"AvgPool", "_ITEXAvgPool", CopyAttrsAll, RewritePool},
       {"AvgPool3D", "_ITEXAvgPool3D", CopyAttrsAll, RewritePool},
-      {"AvgPoolGrad", "_ITEXAvgPoolGrad", CopyAttrsAll, AlwaysRewrite},
       {"AvgPool3DGrad", "_ITEXAvgPool3DGrad", CopyAttrsAll, AlwaysRewrite},
-      {"BatchMatMul", "_ITEXBatchMatMul", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"BatchMatMulV2", "_ITEXBatchMatMulV2", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"Cast", "_ITEXCast", CopyAttrsCast, RewriteNativeCast},
-      {"Conv2D", "_ITEXConv2D", CopyAttrsAllCheckConstFilter, AlwaysRewrite},
+      {"AvgPoolGrad", "_ITEXAvgPoolGrad", CopyAttrsAll, AlwaysRewrite},
+      {"BatchMatMul", "_ITEXBatchMatMul", CopyAttrsAll, AlwaysRewrite},
+      {"BatchMatMulV2", "_ITEXBatchMatMulV2", CopyAttrsAll, AlwaysRewrite},
+      {"Conv2D", "_ITEXConv2D", CopyAttrsAll, AlwaysRewrite},
       {"Conv2DBackpropFilter", "_ITEXConv2DBackpropFilter", CopyAttrsAll,
        RewriteBackwardDataType},
-      {"Conv2DBackpropFilterWithBias", "_ITEXConv2DBackpropFilterWithBias",
-       CopyAttrsAll, RewriteBackwardDataType},
       {"Conv2DBackpropInput", "_ITEXConv2DBackpropInput", CopyAttrsAll,
        RewriteConv2DBackprop},
-      {"Conv2DBackpropInputWithSlice", "_ITEXConv2DBackpropInputWithSlice",
-       CopyAttrsAll, RewriteConv2DBackprop},
-      {"Conv3D", "_ITEXConv3D", CopyAttrsAllCheckConstFilter, AlwaysRewrite},
+      {"Conv3D", "_ITEXConv3D", CopyAttrsAll, AlwaysRewrite},
       {"Conv3DBackpropFilterV2", "_ITEXConv3DBackpropFilterV2", CopyAttrsAll,
        RewriteBackwardDataType},
-      {"Conv3DBackpropFilterWithBias", "_ITEXConv3DBackpropFilterWithBias",
-       CopyAttrsAll, RewriteBackwardDataType},
       {"Conv3DBackpropInput", "_ITEXConv3DBackpropInput", CopyAttrsAll,
        RewriteBackwardDataType},
       {"Conv3DBackpropInputV2", "_ITEXConv3DBackpropInputV2", CopyAttrsAll,
        RewriteBackwardDataType},
-      {"Conv3DBackpropInputV2WithSlice", "_ITEXConv3DBackpropInputV2WithSlice",
-       CopyAttrsAll, RewriteBackwardDataType},
-      {"DepthwiseConv2dNative", "_ITEXDepthwiseConv2dNative",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
+      {"DepthwiseConv2dNative", "_ITEXDepthwiseConv2dNative", CopyAttrsAll,
+       AlwaysRewrite},
       {"DepthwiseConv2dNativeBackpropFilter",
        "_ITEXDepthwiseConv2dNativeBackpropFilter", CopyAttrsAll,
        RewriteBackwardDataType},
       {"DepthwiseConv2dNativeBackpropInput",
        "_ITEXDepthwiseConv2dNativeBackpropInput", CopyAttrsAll,
        RewriteBackwardDataType},
-      {"Elu", "_ITEXElu", CopyAttrsAll, AlwaysRewrite},
-      {"EluGrad", "_ITEXEluGrad", CopyAttrsAll, RewriteBackwardDataType},
+      {"Einsum", "_ITEXEinsum", CopyAttrsAll, AlwaysRewrite},
       {"FusedBatchNorm", "_ITEXFusedBatchNorm", CopyAttrsAll, AlwaysRewrite},
-      {"FusedBatchNormV2", "_ITEXFusedBatchNormV2", CopyAttrsAll,
-       AlwaysRewrite},
-      {"FusedBatchNormV3", "_ITEXFusedBatchNormV3", CopyAttrsAll,
-       AlwaysRewrite},
       {"FusedBatchNormGrad", "_ITEXFusedBatchNormGrad", CopyAttrsAll,
        RewriteBackwardDataType},
       {"FusedBatchNormGradV2", "_ITEXFusedBatchNormGradV2", CopyAttrsAll,
        RewriteBackwardDataType},
       {"FusedBatchNormGradV3", "_ITEXFusedBatchNormGradV3", CopyAttrsAll,
-       RewriteFusedBatchNormGradV3},
+       RewriteBackwardDataType},
+      {"FusedBatchNormV2", "_ITEXFusedBatchNormV2", CopyAttrsAll,
+       AlwaysRewrite},
+      {"FusedBatchNormV3", "_ITEXFusedBatchNormV3", CopyAttrsAll,
+       AlwaysRewrite},
       {"FusedInstanceNorm", "_ITEXFusedInstanceNorm", CopyAttrsAll,
        AlwaysRewrite},
-      {"Gelu", "_ITEXGelu", CopyAttrsAll, AlwaysRewrite},
-      {"GeluGrad", "_ITEXGeluGrad", CopyAttrsAll, RewriteBackwardDataType},
-      {"GRUBlockCell", "_ITEXGRUCell", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"InstanceNorm", "_ITEXInstanceNorm", CopyAttrsAll, AlwaysRewrite},
-      {"LayerNorm", "_ITEXLayerNorm", CopyAttrsAll, RewriteLayerNorm},
-      {"LayerNormGrad", "_ITEXLayerNormGrad", CopyAttrsAll,
+      {"FusedPadConv2D", "_ITEXPadWithConv2D", CopyAttrsAll, AlwaysRewrite,
+       AdjustInputOrder},
+      {"GRUBlockCell", "_ITEXGRUCell", CopyAttrsAll, AlwaysRewrite},
+      {"Gelu", "ITEXGelu", CopyAttrsAll, AlwaysRewrite},
+      {"GeluGrad", "ITEXGeluGrad", CopyAttrsAll, RewriteBackwardDataType},
+      {"LayerNorm", "ITEXLayerNorm", CopyAttrsAll, RewriteLayerNorm},
+      {"LayerNormGrad", "ITEXLayerNormGrad", CopyAttrsAll,
        RewriteLayerNormGrad},
-      {"LeakyRelu", "_ITEXLeakyRelu", CopyAttrsAll, AlwaysRewrite},
-      {"LeakyReluGrad", "_ITEXLeakyReluGrad", CopyAttrsAll,
-       RewriteBackwardDataType},
-      {"MatMul", "_ITEXMatMul", CopyAttrsAllCheckConstFilter, AlwaysRewrite},
+      {"MatMul", "_ITEXMatMul", CopyAttrsAll, AlwaysRewrite},
       {"MaxPool", "_ITEXMaxPool", CopyAttrsAll, RewritePool},
       {"MaxPool3D", "_ITEXMaxPool3D", CopyAttrsAll, RewritePool},
       {"MaxPoolGrad", "_ITEXMaxPoolGrad", CopyAttrsAll, RewriteMaxPoolGrad},
       {"MaxPool3DGrad", "_ITEXMaxPool3DGrad", CopyAttrsAll, RewriteMaxPoolGrad},
-      {"RandomUniform", "_ITEXRandomUniform", CopyAttrsAll, AlwaysRewrite},
-      {"Relu", "_ITEXRelu", CopyAttrsAll, AlwaysRewrite},
-      {"Relu6", "_ITEXRelu6", CopyAttrsAll, AlwaysRewrite},
-      {"Relu6Grad", "_ITEXRelu6Grad", CopyAttrsAll, RewriteBackwardDataType},
-      {"ReluGrad", "_ITEXReluGrad", CopyAttrsAll, RewriteBackwardDataType},
-      {"ResizeBilinear", "_ITEXResizeBilinear", CopyAttrsAll, RewriteResize},
-      {"ResizeBilinearGrad", "_ITEXResizeBilinearGrad", CopyAttrsAll,
-       RewriteResize},
-      {"Slice", "_ITEXSlice", CopyAttrsAll, AlwaysRewrite},
+      {"RandomUniform", "_ITEXRandomUniform", CopyAttrsAll,
+       RewriteRandomUniform},
       {"Softmax", "_ITEXSoftmax", CopyAttrsAll, AlwaysRewrite},
-      {"Swish", "_ITEXSwish", CopyAttrsAll, AlwaysRewrite},
       {"Transpose", "_ITEXTranspose", CopyAttrsAll, AlwaysRewrite},
-
-      // Remapper can generate these Ops directly, but the attribute
-      // "is_filter_const" is set by layout pass, which affects weight cache.
-      // Thus, these Ops are rewritten as themselves.
-      // TODO(yifeng): Remove this quick fix after formal solution is done.
-      {"_ITEXAccMatMul", "_ITEXAccMatMul", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"_ITEXFusedAccMatMul", "_ITEXFusedAccMatMul",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
-      {"_ITEXFusedAccMatMulWithSum", "_ITEXFusedAccMatMulWithSum",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
-      {"_ITEXFusedDepthwiseConv2dNative", "_ITEXFusedDepthwiseConv2dNative",
-       CopyAttrsAllCheckConstFilter, RewriteFusedConv},
-      {"_ITEXFusedConv2D", "_ITEXFusedConv2D", CopyAttrsAllCheckConstFilter,
-       RewriteFusedConv},
-      {"_ITEXFusedConv3D", "_ITEXFusedConv3D", CopyAttrsAllCheckConstFilter,
-       RewriteFusedConv},
-      {"_ITEXFusedMatMul", "_ITEXFusedMatMul", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"_ITEXGRUCell", "_ITEXGRUCell", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"_ITEXAUGRUCell", "_ITEXAUGRUCell", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
+      {"_FusedBatchNormEx", "_ITEXFusedBatchNormEx", CopyAttrsAll,
+       RewriteFusedBatchNormEx},
+      {"_FusedMatMul", "_ITEXFusedMatMul", CopyAttrsAll, AlwaysRewrite},
       // Intel-TF ops. Usually these ops should always be rewritten.
       // This part is for compatibility of legacy Intel-TF models, it will be
       // removed in future.
-      {"_FusedMatMul", "_ITEXFusedMatMul", CopyAttrsAllCheckConstFilter,
+      {"MklAUGRU", "_ITEXForwardAUGRU", CopyAttrsAll, AlwaysRewrite},
+      {"MklGRU", "_ITEXForwardGRU", CopyAttrsAll, AlwaysRewrite},
+      {"_MklFusedBatchMatMulV2", "_ITEXFusedBatchMatMulV2", CopyAttrsAll,
        AlwaysRewrite},
-      {"_MklFusedBatchMatMulV2", "_ITEXFusedBatchMatMulV2",
-       CopyAttrsAllCheckConstFilter, AlwaysRewrite},
       {"_MklLayerNorm", "_ITEXMklLayerNorm", CopyAttrsAll, AlwaysRewrite},
-      {"MklGRU", "_ITEXForwardGRU", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
-      {"MklAUGRU", "_ITEXForwardAUGRU", CopyAttrsAllCheckConstFilter,
-       AlwaysRewrite},
 
       // INT8 op
       {"Dequantize", "_ITEXDequantize", CopyAttrsAll, RewriteQuantize},
       {"QuantizedAvgPool", "ITEXQuantizedAvgPool", CopyAttrsAll, AlwaysRewrite},
+      // Disable concat rewrite, since we don't support concat int8 with
+      // different scales
+      // {"QuantizedConcatV2", "_ITEXQuantizedConcatV2", CopyAttrsAll,
+      //  AlwaysRewrite},
       {"QuantizedConv2D", "_ITEXQuantizedConv2D", CopyAttrsQuantizedConv2D,
        AlwaysRewrite},
       {"QuantizedConv2DAndRequantize", "_ITEXQuantizedConv2DAndRequantize",
@@ -180,22 +124,22 @@ const std::vector<NativeFormatInfo>* GetNativeFormatInfo() {
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
       {"QuantizedConv2DWithBias", "_ITEXQuantizedConv2DWithBias",
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
-      {"QuantizedConv2DWithBiasAndRequantize",
-       "_ITEXQuantizedConv2DWithBiasAndRequantize", CopyAttrsQuantizedConv2D,
-       AlwaysRewrite},
       {"QuantizedConv2DWithBiasAndRelu", "_ITEXQuantizedConv2DWithBiasAndRelu",
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
       {"QuantizedConv2DWithBiasAndReluAndRequantize",
        "_ITEXQuantizedConv2DWithBiasAndReluAndRequantize",
+       CopyAttrsQuantizedConv2D, AlwaysRewrite},
+      {"QuantizedConv2DWithBiasAndRequantize",
+       "_ITEXQuantizedConv2DWithBiasAndRequantize", CopyAttrsQuantizedConv2D,
+       AlwaysRewrite},
+      {"QuantizedConv2DWithBiasSignedSumAndReluAndRequantize",
+       "_ITEXQuantizedConv2DWithBiasSignedSumAndReluAndRequantize",
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
       {"QuantizedConv2DWithBiasSumAndRelu",
        "_ITEXQuantizedConv2DWithBiasSumAndRelu", CopyAttrsQuantizedConv2D,
        AlwaysRewrite},
       {"QuantizedConv2DWithBiasSumAndReluAndRequantize",
        "_ITEXQuantizedConv2DWithBiasSumAndReluAndRequantize",
-       CopyAttrsQuantizedConv2D, AlwaysRewrite},
-      {"QuantizedConv2DWithBiasSignedSumAndReluAndRequantize",
-       "_ITEXQuantizedConv2DWithBiasSignedSumAndReluAndRequantize",
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
       {"QuantizedDepthwiseConv2D", "_ITEXQuantizedDepthwiseConv2D",
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
@@ -210,23 +154,24 @@ const std::vector<NativeFormatInfo>* GetNativeFormatInfo() {
        CopyAttrsQuantizedConv2D, AlwaysRewrite},
       {"QuantizedMatMulWithBias", "_ITEXQuantizedMatMulWithBias",
        CopyAttrsQuantizedMatMul, AlwaysRewrite},
+      {"QuantizedMatMulWithBiasAndDequantize",
+       "_ITEXQuantizedMatMulWithBiasAndDequantize", CopyAttrsQuantizedMatMul,
+       AlwaysRewrite},
       {"QuantizedMatMulWithBiasAndRelu", "_ITEXQuantizedMatMulWithBiasAndRelu",
        CopyAttrsQuantizedMatMul, AlwaysRewrite},
       {"QuantizedMatMulWithBiasAndReluAndRequantize",
        "_ITEXQuantizedMatMulWithBiasAndReluAndRequantize",
        CopyAttrsQuantizedMatMul, AlwaysRewrite},
-      {"QuantizedMatMulWithBiasAndDequantize",
-       "_ITEXQuantizedMatMulWithBiasAndDequantize", CopyAttrsQuantizedMatMul,
-       AlwaysRewrite},
       {"QuantizedMatMulWithBiasAndRequantize",
        "_ITEXQuantizedMatMulWithBiasAndRequantize", CopyAttrsQuantizedMatMul,
        AlwaysRewrite},
       {"QuantizedMaxPool", "_ITEXQuantizedMaxPool", CopyAttrsAll,
        AlwaysRewrite},
+      {"QuantizedMaxPool3D", "_ITEXQuantizedMaxPool3D", CopyAttrsAll,
+       AlwaysRewrite},
       {"QuantizedReshape", "_ITEXQuantizedReshape", CopyAttrsAll,
        RewriteQuantizeReshape},
       {"QuantizeV2", "_ITEXQuantizeV2", CopyAttrsQuantize, RewriteQuantize},
-
       {"_QuantizedBatchMatMul", "_ITEXQuantizedBatchMatMul", CopyAttrsAll,
        AlwaysRewrite},
       {"_QuantizedBatchMatMulV2AndDequantize",
@@ -255,10 +200,138 @@ const std::vector<NativeFormatInfo>* GetNativeFormatInfo() {
        AlwaysRewrite}};
   return &rinfo;
 }
+
+std::vector<NativeFormatInfo>* GetCPUNativeFormatInfo() {
+  static std::vector<NativeFormatInfo> rinfo{
+      {"AddN", "_ITEXAddN", CopyAttrsAll, AlwaysRewrite},
+      {"Elu", "_ITEXElu", CopyAttrsAll, AlwaysRewrite},
+      {"EluGrad", "_ITEXEluGrad", CopyAttrsAll, RewriteBackwardDataType},
+      {"LeakyRelu", "_ITEXLeakyRelu", CopyAttrsAll, AlwaysRewrite},
+      {"LeakyReluGrad", "_ITEXLeakyReluGrad", CopyAttrsAll,
+       RewriteBackwardDataType},
+      {"Relu6Grad", "_ITEXRelu6Grad", CopyAttrsAll, RewriteBackwardDataType},
+      {"ReluGrad", "_ITEXReluGrad", CopyAttrsAll, RewriteBackwardDataType},
+      {"ResizeBilinear", "_ITEXResizeBilinear", CopyAttrsAll, RewriteResize},
+      {"ResizeBilinearGrad", "_ITEXResizeBilinearGrad", CopyAttrsAll,
+       RewriteResize},
+      {"Slice", "_ITEXSlice", CopyAttrsAll, AlwaysRewrite}};
+  return &rinfo;
+}
+
+std::vector<NativeFormatInfo>* GetGPUNativeFormatInfo() {
+  static std::vector<NativeFormatInfo> rinfo{
+#ifndef USING_NEXTPLUGGABLE_DEVICE
+      {"MaxPool", "_ITEXMaxPool", CopyAttrsAll, RewritePool},
+      {"MaxPool3D", "_ITEXMaxPool3D", CopyAttrsAll, RewritePool},
+      {"MaxPoolGrad", "_ITEXMaxPoolGrad", CopyAttrsAll, RewriteMaxPoolGrad},
+      {"MaxPool3DGrad", "_ITEXMaxPool3DGrad", CopyAttrsAll, RewriteMaxPoolGrad},
+      {"MaxPoolV2", "_ITEXMaxPoolV2", CopyAttrsAll, AlwaysRewrite},
+      {"MaxPoolGradV2", "_ITEXMaxPoolGradV2", CopyAttrsAll, RewriteMaxPoolGrad},
+#endif  // USING_NEXTPLUGGABLE_DEVICE
+      {"TensorArray", "_ITEXTensorArray", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayClose", "_ITEXTensorArrayClose", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayCloseV2", "_ITEXTensorArrayClose", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayCloseV3", "_ITEXTensorArrayClose", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayConcat", "_ITEXTensorArrayConcat", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayConcatV2", "_ITEXTensorArrayConcat", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayConcatV3", "_ITEXTensorArrayConcat", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGather", "_ITEXTensorArrayGather", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGatherV2", "_ITEXTensorArrayGather", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGatherV3", "_ITEXTensorArrayGather", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGrad", "_ITEXTensorArrayGrad", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGradV2", "_ITEXTensorArrayGrad", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGradV3", "_ITEXTensorArrayGrad", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayGradWithShape", "_ITEXTensorArrayGradWithShape",
+       CopyAttrsForTensorArray, AlwaysRewrite},
+      {"TensorArrayPack", "_ITEXTensorArrayPack", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayRead", "_ITEXTensorArrayRead", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayReadV2", "_ITEXTensorArrayRead", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayReadV3", "_ITEXTensorArrayRead", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayScatter", "_ITEXTensorArrayScatter", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayScatterV2", "_ITEXTensorArrayScatter",
+       CopyAttrsForTensorArray, AlwaysRewrite},
+      {"TensorArrayScatterV3", "_ITEXTensorArrayScatter",
+       CopyAttrsForTensorArray, AlwaysRewrite},
+      {"TensorArraySize", "_ITEXTensorArraySize", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArraySizeV2", "_ITEXTensorArraySize", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArraySizeV3", "_ITEXTensorArraySize", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArraySplit", "_ITEXTensorArraySplit", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArraySplitV2", "_ITEXTensorArraySplit", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArraySplitV3", "_ITEXTensorArraySplit", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayUnPack", "_ITEXTensorArrayUnPack", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayV2", "_ITEXTensorArray", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayV3", "_ITEXTensorArray", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayWrite", "_ITEXTensorArrayWrite", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayWriteV2", "_ITEXTensorArrayWrite", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+      {"TensorArrayWriteV3", "_ITEXTensorArrayWrite", CopyAttrsForTensorArray,
+       AlwaysRewrite},
+  };
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  static bool is_initialized = false;
+  if (!is_initialized) {
+    ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+    if (!npdConfig.isXlaAutoJitEnabled()) {
+      rinfo.push_back({"MaxPool", "_ITEXMaxPool", CopyAttrsAll, RewritePool});
+      rinfo.push_back(
+          {"MaxPool3D", "_ITEXMaxPool3D", CopyAttrsAll, RewritePool});
+      rinfo.push_back({"MaxPoolGrad", "_ITEXMaxPoolGrad", CopyAttrsAll,
+                       RewriteMaxPoolGrad});
+      rinfo.push_back({"MaxPool3DGrad", "_ITEXMaxPool3DGrad", CopyAttrsAll,
+                       RewriteMaxPoolGrad});
+      rinfo.push_back(
+          {"MaxPoolV2", "_ITEXMaxPoolV2", CopyAttrsAll, AlwaysRewrite});
+      rinfo.push_back({"MaxPoolGradV2", "_ITEXMaxPoolGradV2", CopyAttrsAll,
+                       RewriteMaxPoolGrad});
+    }
+    is_initialized = true;
+  }
+#endif
+
+  return &rinfo;
+}
+
+// Rewrite non-oneDNN op which is optimized in a customized manner.
+std::vector<NativeFormatInfo>* GetCustomNativeFormatInfo() {
+  static std::vector<NativeFormatInfo> rinfo{
+      {"RandomUniform", "_ITEXRandomUniform", CopyAttrsAll,
+       RewriteRandomUniform},
+  };
+  return &rinfo;
+}
+
 }  // namespace
 
 const NativeFormatInfo* CheckForNodeNativeFormat(
-    const utils::MutableNodeView& node_view) {
+    OptimizerContext* opt_ctx, const utils::MutableNodeView& node_view) {
   NodeDef& node_def = *(node_view.node());
 
   if (!IsLayoutRewriteSupportedDataType(node_def)) return nullptr;
@@ -266,7 +339,34 @@ const NativeFormatInfo* CheckForNodeNativeFormat(
   // We now check if rewrite rule applies for this op. If rewrite rule passes
   // for this op, then we rewrite it to Native op.
   // Find matching NativeFormatInfo and then check that rewrite rule applies.
-  const std::vector<NativeFormatInfo>* rinfo = GetNativeFormatInfo();
+  std::vector<NativeFormatInfo>* rinfo;
+  if (absl::StrContains("CPU", opt_ctx->device_name)) {
+    bool enable_omp = true;
+    ITEX_CHECK_OK(ReadBoolFromEnvVar("ITEX_OMP_THREADPOOL", true, &enable_omp));
+#ifdef CC_THREADPOOL_BUILD
+    enable_omp = false;
+#endif
+    if (opt_ctx->enable_complete_opt) {
+      if (enable_omp) {
+        rinfo = GetCPUEigenNativeFormatInfo();
+        rinfo->insert(rinfo->end(), GetCPUNativeFormatInfo()->begin(),
+                      GetCPUNativeFormatInfo()->end());
+      } else {
+        rinfo = GetCPUEigenNativeFormatInfo();
+      }
+    } else {
+      rinfo = GetCustomNativeFormatInfo();
+    }
+  } else if (absl::StrContains("GPU", opt_ctx->device_name)) {
+    rinfo = GetGPUNativeFormatInfo();
+  } else if (absl::StrContains("XPU", opt_ctx->device_name)) {
+    rinfo = GetGPUNativeFormatInfo();
+  } else {
+    ITEX_LOG(WARNING) << "invalid device name, expected CPU/GPU/XPU, got "
+                      << opt_ctx->device_name;
+    return nullptr;
+  }
+
   for (auto ri = rinfo->cbegin(); ri != rinfo->cend(); ++ri) {
     if (node_def.op() == ri->name && ri->rewrite_rule(node_view)) {
       return &*ri;
@@ -301,15 +401,10 @@ Status RewriteNode(NativeFormatContext* ctx, const int node_index,
 
   ri->copy_attrs(node_view, &new_node_def);
 
-  // TODO(yifeng): Remove this check after formal solution
-  // for is_filter_const setting is done.
-  if (ri->name == ri->new_name) {
-    bool is_filter_const = false;
-    ITEX_CHECK(
-        TryGetNodeAttr(new_node_def, "is_filter_const", &is_filter_const));
-  }
+  if (ri->post_process != nullptr) ri->post_process(&new_node_def);
 
-  SetConstFilterAttr(node_view, &new_node_def, ctx->nodes_to_preserve);
+  // Add workspace inputs if needed.
+  AddWorkspace(node_view, &new_node_def);
 
   // Incoming data edges from 'orig_node' node to new 'new_node' node are
   // already copied in BuildNode. We need to handle control edges now.
@@ -328,7 +423,7 @@ Status RewriteNode(NativeFormatContext* ctx, const int node_index,
   return Status::OK();
 }
 
-Status RunNativeLayout(const char* device_name, const GrapplerItem& item,
+Status RunNativeLayout(OptimizerContext* opt_ctx, const GrapplerItem& item,
                        const GraphDef& graph_def, GraphDef* optimized_graph) {
   Status status;
   GraphDef multable_graph_def = graph_def;
@@ -344,20 +439,22 @@ Status RunNativeLayout(const char* device_name, const GrapplerItem& item,
 
   ITEX_VLOG(1) << "NativeLayoutPass: Start to rewrite nodes.";
 
-  for (int node_index = num_nodes - 1; node_index >= 0; --node_index) {
+  for (int node_index = 0; node_index < num_nodes; ++node_index) {
     const auto* node_view = ctx.graph_view.GetNode(node_index);
     const auto* node_def = node_view->node();
 
     // Check if node can run on current optimizer device.
-    if (!NodeIsOnDevice(device_name, node_def)) continue;
+    if (!NodeIsOnDevice(opt_ctx->device_name, node_def)) continue;
 
-    // Don't rewrite fetch node because must keep its name unchanged.
-    // TODO(itex): Rewrite fetch nodes if meeting performance regression.
-    if (ctx.nodes_to_preserve.count(node_def->name()) > 0) continue;
+    // Check if node is fp16 and supported on device.
+    if (NodeIsOnCpu(node_def) &&
+        GetDataTypeFromAttr(*node_def, "T") == DT_HALF &&
+        !port::HasCpuFP16Support())
+      continue;
 
     const NativeFormatInfo* ri = nullptr;
     // We will first search if node is to be rewritten.
-    if ((ri = CheckForNodeNativeFormat(*node_view)) != nullptr) {
+    if ((ri = CheckForNodeNativeFormat(opt_ctx, *node_view)) != nullptr) {
       const string& node_name = node_def->name();
       const string& op_name = node_def->op();
 

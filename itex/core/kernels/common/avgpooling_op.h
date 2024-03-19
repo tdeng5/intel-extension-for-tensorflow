@@ -60,8 +60,11 @@ class AvgPoolGradOp : public PoolingBackwardOpBase<T> {
                                this->padding_list_);
 
       dnnl::memory::dims filter_dims, strides, padding_left, padding_right;
-      this->PoolParamsToDims(&pool_params, &filter_dims, &strides,
-                             &padding_left, &padding_right, is_pool2d);
+      dnnl::memory::dims dilation_dims;
+
+      this->PoolParamsToDims(&pool_params, &filter_dims, &dilation_dims,
+                             &strides, &padding_left, &padding_right,
+                             is_pool2d);
 
       dnnl::memory::dims orig_input_dims_order = TFShapeToOneDnnDimsInNC(
           orig_input_shape, this->data_format_tf_, is_pool2d);
@@ -72,19 +75,16 @@ class AvgPoolGradOp : public PoolingBackwardOpBase<T> {
                                 this->data_format_onednn_);
       dnnl::memory::desc diff_dst_md(diff_dst_dims, OneDnnType<T>(),
                                      this->data_format_onednn_);
-      dnnl::pooling_backward::desc pooling_bwd_desc(
-          dnnl::algorithm::pooling_avg_exclude_padding, src_md, diff_dst_md,
-          strides, filter_dims, padding_left, padding_right);
-      dnnl::pooling_forward::desc pooling_fwd_desc(
-          prop, dnnl::algorithm::pooling_avg_exclude_padding, src_md,
-          diff_dst_md, strides, filter_dims, padding_left, padding_right);
-      dnnl::pooling_forward::primitive_desc pooling_fwd_pd(pooling_fwd_desc,
-                                                           onednn_engine);
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+      dnnl::pooling_forward::primitive_desc pooling_fwd_pd(
+          onednn_engine, prop, dnnl::algorithm::pooling_avg_exclude_padding,
+          src_md, diff_dst_md, strides, filter_dims, dilation_dims,
+          padding_left, padding_right);
       dnnl::pooling_backward::primitive_desc pooling_bwd_pd(
-          pooling_bwd_desc, attr, onednn_engine, pooling_fwd_pd);
-
+          onednn_engine, dnnl::algorithm::pooling_avg_exclude_padding, src_md,
+          diff_dst_md, strides, filter_dims, dilation_dims, padding_left,
+          padding_right, pooling_fwd_pd, attr);
       Tensor scratchpad_tensor;
       int64 scratchpad_size =
           pooling_bwd_pd.scratchpad_desc().get_size() / sizeof(T);

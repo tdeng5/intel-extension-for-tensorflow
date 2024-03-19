@@ -44,6 +44,10 @@ class LayerNormOp : public OpKernel {
     OP_REQUIRES(
         context, tensor_format == "NHWC",
         errors::InvalidArgument("Invalid data format, only support NHWC"));
+    is_inplace_ = false;
+    if (context->HasAttr("is_inplace")) {
+      OP_REQUIRES_OK(context, context->GetAttr("is_inplace", &is_inplace_));
+    }
   }
 
   void Compute(OpKernelContext* context) override {
@@ -128,17 +132,21 @@ class LayerNormOp : public OpKernel {
       auto flags = dnnl::normalization_flags::use_scale |
                    dnnl::normalization_flags::use_shift;
 
-      dnnl::layer_normalization_forward::desc ln_fwd_desc(propagation, src_md,
-                                                          epsilon_, flags);
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       dnnl::layer_normalization_forward::primitive_desc ln_fwd_pd(
-          ln_fwd_desc, attr, onednn_engine);
+          onednn_engine, propagation, src_md, src_md, epsilon_, flags, attr);
       dnnl::layer_normalization_forward ln_fwd_primitive(ln_fwd_pd);
 
       // Allocate output dst tensor.
-      OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
-                                  {0}, 0, src_tensor.shape(), &dst_tensor));
+      if (is_inplace_) {
+        context->set_output(0, src_tensor);
+        dst_tensor = context->mutable_output(0);
+      } else {
+        OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
+                                    {0}, 0, src_tensor.shape(), &dst_tensor));
+      }
+
       // _MklLayernorm doesn't have mean/variance output tensor
       if (!is_inteltf_ln) {
         AllocateTFOutputs(context, mean_var_shape, &layer_mean_tensor,
@@ -245,6 +253,7 @@ class LayerNormOp : public OpKernel {
   }
 
  private:
+  bool is_inplace_;
   float epsilon_;
   bool is_training_ = false;
   string tensor_format = "NHWC";
@@ -382,16 +391,13 @@ class LayerNormGradOp : public OpKernel {
       auto propagation_bwd = dnnl::prop_kind::backward;
       auto flags = dnnl::normalization_flags::use_scale |
                    dnnl::normalization_flags::use_shift;
-      dnnl::layer_normalization_forward::desc ln_fwd_desc(
-          propagation_fwd, src_md, epsilon_, flags);
-      dnnl::layer_normalization_forward::primitive_desc ln_fwd_pd(
-          ln_fwd_desc, onednn_engine);
-      dnnl::layer_normalization_backward::desc ln_bwd_desc(
-          propagation_bwd, diff_dst_md_any, src_md, epsilon_, flags);
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+      dnnl::layer_normalization_forward::primitive_desc ln_fwd_pd(
+          onednn_engine, propagation_fwd, src_md, src_md, epsilon_, flags);
       dnnl::layer_normalization_backward::primitive_desc ln_bwd_pd(
-          ln_bwd_desc, attr, onednn_engine, ln_fwd_pd);
+          onednn_engine, propagation_bwd, diff_dst_md_any, diff_dst_md_any,
+          src_md, epsilon_, flags, ln_fwd_pd, attr);
       dnnl::layer_normalization_backward ln_bwd_primitive(ln_bwd_pd);
 
       AllocateTFOutputs(context, scale_tensor.shape(), &diff_scale_tensor,

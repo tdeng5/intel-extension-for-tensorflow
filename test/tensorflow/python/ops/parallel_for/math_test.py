@@ -22,12 +22,19 @@ from __future__ import print_function
 from intel_extension_for_tensorflow.python.test_func import test_util
 from intel_extension_for_tensorflow.python.test_func import test
 
+import tensorflow as tf
+
 from absl.testing import parameterized
 
 from tensorflow.python.eager import backprop
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import ops as framework_ops
+try:
+  from tensorflow.python.framework.tensor import enable_tensor_equality
+except ImportError:
+  from tensorflow.python.framework.ops import enable_tensor_equality
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import clip_ops
 from tensorflow.python.ops import linalg_ops
@@ -159,8 +166,8 @@ class MathTest(PForTestCase, parameterized.TestCase):
 
   def test_binary_cwise_ops(self):
     # Enable tensor equality to test `equal` and `not_equal` ops below.
-    default_equality = framework_ops.Tensor._USE_EQUALITY
-    framework_ops.enable_tensor_equality()
+    default_equality = tf.Tensor._USE_EQUALITY
+    enable_tensor_equality()
     try:
       logical_ops = [
           math_ops.logical_and, math_ops.logical_or, math_ops.logical_xor

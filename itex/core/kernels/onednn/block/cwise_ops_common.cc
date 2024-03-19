@@ -159,10 +159,9 @@ class OneDnnBinaryOp : public BinaryOp<Device, Functor> {
         // Eigen if needed.
         dnnl::primitive_attr attr;
         attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
-        auto binary_d = dnnl::binary::desc(alg_kind, src_mds[kFirst],
-                                           src_mds[kSecond], dst_md_prefer);
-        auto binary_pd =
-            dnnl::binary::primitive_desc(binary_d, attr, onednn_engine);
+        auto binary_pd = dnnl::binary::primitive_desc(
+            onednn_engine, alg_kind, src_mds[kFirst], src_mds[kSecond],
+            dst_md_prefer, attr);
         auto binary_prim = dnnl::binary(binary_pd);
 
         Tensor scratchpad_tensor;

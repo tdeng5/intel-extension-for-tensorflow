@@ -121,7 +121,7 @@ class DynamicPartitionTest(test.TestCase):
     self.assertEqual(num_partitions, len(partition_vals))
     for i in range(num_partitions):
       # reshape because of empty parts
-      parts_np = np.array(parts[i], dtype=np.float).reshape(-1, cols)
+      parts_np = np.array(parts[i], dtype=np.float32).reshape(-1, cols)
       self.assertAllEqual(parts_np, partition_vals[i])
 
 
@@ -199,7 +199,7 @@ class DynamicPartitionTest(test.TestCase):
     self.assertEqual(3, len(partition_vals))
     self.assertAllEqual([[]], partition_vals[0])
     self.assertAllEqual([[]], partition_vals[1])
-    self.assertAllEqual(np.array([], dtype=np.float).reshape(0, 0),
+    self.assertAllEqual(np.array([], dtype=np.float32).reshape(0, 0),
                         partition_vals[2])
 
   def testEmptyPartitions(self):
@@ -284,7 +284,8 @@ class DynamicPartitionTest(test.TestCase):
 
   @test_util.run_deprecated_v1
   def testErrorIndexOutOfRange(self):
-    with self.cached_session():
+    # GPU kernels don't throw exceptions.
+    with self.cached_session(use_gpu=False):
       data = constant_op.constant([[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11],
                                    [12, 13, 14]])
       indices = constant_op.constant([0, 2, 99, 2, 2])

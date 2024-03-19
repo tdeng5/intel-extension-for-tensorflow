@@ -27,7 +27,7 @@ CastFunctorType GetGpuCastFromBool(DataType dst_dtype) {
 }
 
 CastFunctorType GetGpuCastFromHalf(DataType dst_dtype) {
-  CURRY_TYPES3_NO_BF16(CAST_CASE, GPUDevice, Eigen::half);
+  CURRY_TYPES3(CAST_CASE, GPUDevice, Eigen::half);
   return nullptr;
 }
 
@@ -47,7 +47,7 @@ CastFunctorType GetGpuCastFromInt32(DataType dst_dtype) {
 }
 
 CastFunctorType GetGpuCastFromInt64(DataType dst_dtype) {
-  CURRY_TYPES3_NO_BF16(CAST_CASE, GPUDevice, int64);
+  CURRY_TYPES3(CAST_CASE, GPUDevice, int64);
   return nullptr;
 }
 

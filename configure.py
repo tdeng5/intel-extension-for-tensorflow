@@ -33,7 +33,7 @@ except ImportError:
 # pylint: enable=g-import-not-at-top
 
 
-_DEFAULT_DPCPP_TOOLKIT_PATH = '/opt/intel/oneapi/compiler/latest/linux'
+_DEFAULT_DPCPP_TOOLKIT_PATH = '/opt/intel/oneapi/compiler/latest'
 _DEFAULT_MKL_PATH='/opt/intel/oneapi/mkl/latest'
 _DEFAULT_AOT_CONFIG = ''
 _DEFAULT_GCC_TOOLCHAIN_PATH = ''
@@ -129,8 +129,10 @@ def write_action_env_to_bazelrc(var_name, var):
   write_to_bazelrc('build --action_env %s="%s"' % (var_name, str(var)))
 
 
-def run_shell(cmd, allow_non_zero=False):
+def run_shell(cmd, allow_non_zero=False, stderr=None):
   """Running shell command with check."""
+  if stderr is None:
+    stderr = sys.stdout
   def _checked_cmd(cmd):
     deny_list = [';', '&', '|', '`', '\r', '\n', '(', ')', '<', '>']
     if cmd is None:
@@ -148,11 +150,11 @@ def run_shell(cmd, allow_non_zero=False):
     sys.exit(-1)
   if allow_non_zero:
     try:
-      output = subprocess.check_output(cmd)
+      output = subprocess.check_output(cmd, stderr=stderr)
     except subprocess.CalledProcessError as e:
       output = e.output
   else:
-    output = subprocess.check_output(cmd)
+    output = subprocess.check_output(cmd, stderr=stderr)
   return output.decode('UTF-8').strip()
 
 def check_safe_python_bin_path(python_bin_path):
@@ -204,10 +206,16 @@ def get_python_path(environ_cp, python_bin_path):
     python_paths = environ_cp.get('PYTHONPATH').split(':')
 
   checked_python_bin_path = check_safe_python_bin_path(python_bin_path)
+  library_paths = []
+  user_paths = []
   try:
     library_paths = run_shell([
         checked_python_bin_path, '-c',
         'import site; print("\\n".join(site.getsitepackages()))'
+    ]).split('\n')
+    user_paths = run_shell([
+        checked_python_bin_path, '-m',
+        'site', '--user-site'
     ]).split('\n')
   except subprocess.CalledProcessError:
     library_paths = [
@@ -218,12 +226,16 @@ def get_python_path(environ_cp, python_bin_path):
         ])
     ]
 
-  all_paths = set(python_paths + library_paths)
+  all_paths = set(python_paths + library_paths + user_paths)
 
   paths = []
   for path in all_paths:
     if os.path.isdir(path):
-      paths.append(path)
+      tf_path = path + os.path.sep + "tensorflow"
+      if os.path.exists(tf_path):
+        paths.append(path)
+  if len(paths) == 0:
+    raise Exception("Tensorflow package not found! Please install it first!")
   return paths
 
 
@@ -286,20 +298,26 @@ def setup_python(environ_cp):
     python_paths = environ_cp.get('PYTHONPATH').split(':')
     if python_lib_path in python_paths:
       write_action_env_to_bazelrc('PYTHONPATH', environ_cp.get('PYTHONPATH'))
-  # check tensorflw >=2.10.0
+  # check tensorflw version
   # not check tensorflow-estimator version
-  package_list= subprocess.Popen(checked_python_lib_path + "/../../../bin/pip" + " list | grep \"^tensorflow \"", shell=True, stdout=subprocess.PIPE).stdout.read().decode()
+  package_list= subprocess.Popen(os.path.sep.join(checked_python_bin_path.split(os.path.sep)[:-1]) + os.path.sep + "pip" + " list | grep \"^tensorflow \"", shell=True, stdout=subprocess.PIPE).stdout.read().decode()
   tensorflow_list = package_list.splitlines()
   for line in tensorflow_list:
     if line.startswith("tensorflow  "):
         name, version = line.split()
+        version = version.split("rc")[0]
+        # To support Post-release version scheme: X.Y.postN
+        version = version.split(".post")[0]
         current_tensorflow_version = convert_version_to_int(version)
-        min_tf_version = convert_version_to_int("2.10.0")
+        tf_major_version = version.split(".")[0]
+        tf_minor_version = version.split(".")[1]
+        write_to_bazelrc('build --define=tf_main_version=' + tf_major_version + '.' + tf_minor_version)
+        min_tf_version = convert_version_to_int("2.15.0")
         if current_tensorflow_version < min_tf_version:
-          print('Make sure you installed tensorflow version >= 2.10.0')
+          print('Make sure you installed tensorflow version == 2.15.0')
           sys.exit(1)
     else:
-         print('Make sure you installed tensorflow version >= 2.10.0')
+         print('Make sure you installed tensorflow version == 2.15.0')
          sys.exit(1)
   # Write tools/python_bin_path.sh
   try:
@@ -343,6 +361,24 @@ def cleanup_makefile():
         if f.endswith('BUILD'):
           os.remove(os.path.join(root, f))
 
+def get_var_from_name(environ_cp, var_name):
+  var = environ_cp.get(var_name)
+  if var is not None:
+    var_content = var.strip().lower()
+    true_strings = ('1', 't', 'true', 'y', 'yes')
+    false_strings = ('0', 'f', 'false', 'n', 'no')
+    if var_content in true_strings:
+      var = True
+    elif var_content in false_strings:
+      var = False
+    else:
+      raise UserInputError(
+          'Environment variable %s must be set as a boolean indicator.\n'
+          'The following are accepted as TRUE : %s.\n'
+          'The following are accepted as FALSE: %s.\n'
+          'Current value is %s.' %
+          (var_name, ', '.join(true_strings), ', '.join(false_strings), var))
+  return var
 
 def get_var(environ_cp,
             var_name,
@@ -392,23 +428,7 @@ def get_var(environ_cp,
   else:
     question += ' [y/N]: '
 
-  var = environ_cp.get(var_name)
-  if var is not None:
-    var_content = var.strip().lower()
-    true_strings = ('1', 't', 'true', 'y', 'yes')
-    false_strings = ('0', 'f', 'false', 'n', 'no')
-    if var_content in true_strings:
-      var = True
-    elif var_content in false_strings:
-      var = False
-    else:
-      raise UserInputError(
-          'Environment variable %s must be set as a boolean indicator.\n'
-          'The following are accepted as TRUE : %s.\n'
-          'The following are accepted as FALSE: %s.\n'
-          'Current value is %s.' %
-          (var_name, ', '.join(true_strings), ', '.join(false_strings), var))
-
+  var = get_var_from_name(environ_cp, var_name)
   while var is None:
     user_input_origin = get_input(question)
     user_input = user_input_origin.strip().lower()
@@ -519,12 +539,11 @@ def convert_version_to_int(version):
   return int(version_str)
 
 
-def check_bazel_version(min_version, max_version):
-  """Check installed bazel version is between min_version and max_version.
+def check_bazel_version(min_version):
+  """Check installed bazel version is higher than min_version.
 
   Args:
     min_version: string for minimum bazel version (must exist!).
-    max_version: string for maximum bazel version (must exist!).
 
   Returns:
     The bazel version detected.
@@ -542,7 +561,6 @@ def check_bazel_version(min_version, max_version):
 
   min_version_int = convert_version_to_int(min_version)
   curr_version_int = convert_version_to_int(curr_version)
-  max_version_int = convert_version_to_int(max_version)
 
   # Check if current bazel version can be detected properly.
   if not curr_version_int:
@@ -555,14 +573,6 @@ def check_bazel_version(min_version, max_version):
   if curr_version_int < min_version_int:
     print('Please upgrade your bazel installation to version %s or higher to '
           'build Intel® Extension for TensorFlow*!' % min_version)
-    sys.exit(1)
-  if (curr_version_int > max_version_int and
-      'TF_IGNORE_MAX_BAZEL_VERSION' not in os.environ):
-    print('Please downgrade your bazel installation to version %s or lower to '
-          'build Intel® Extension for TensorFlow*! To downgrade: '
-          'download the installer for the old '
-          'version (from https://github.com/bazelbuild/bazel/releases) then '
-          'run the installer.' % max_version)
     sys.exit(1)
   return curr_version
 
@@ -616,6 +626,7 @@ def prompt_loop_or_load_from_env(environ_cp,
                                  check_success,
                                  error_msg,
                                  suppress_default_error=False,
+                                 resolve_symlinks=False,
                                  n_ask_attempts=_DEFAULT_PROMPT_ASK_ATTEMPTS):
   """Loop over user prompts for an ENV param until receiving a valid response.
 
@@ -632,9 +643,11 @@ def prompt_loop_or_load_from_env(environ_cp,
       boolean. Should return True if the value provided is considered valid. May
       contain a complex error message if error_msg does not provide enough
       information. In that case, set suppress_default_error to True.
-    error_msg: (String) invalid response upon check_success(input) failure.
+    error_msg: (String) String with one and only one '%s'. Formatted with each
+      invalid response upon check_success(input) failure.
     suppress_default_error: (Bool) Suppress the above error message in favor of
       one from the check_success function.
+    resolve_symlinks: (Bool) Translate symbolic links into the real filepath.
     n_ask_attempts: (Integer) Number of times to query for valid input before
       raising an error and quitting.
 
@@ -659,13 +672,15 @@ def prompt_loop_or_load_from_env(environ_cp,
     if check_success(val):
       break
     if not suppress_default_error:
-      print(error_msg)
+      print(error_msg % val)
     environ_cp[var_name] = ''
   else:
     raise UserInputError('Invalid %s setting was provided %d times in a row. '
                          'Assuming to be a scripting mistake.' %
                          (var_name, n_ask_attempts))
 
+  if resolve_symlinks:
+    val = os.path.realpath(val)
   environ_cp[var_name] = val
   return val
 
@@ -838,9 +853,10 @@ def check_safe_workspace_path(workspace):
   normal_flag = True
   if workspace is None:
     normal_flag = False
-  for c in _DENY_PATH_LIST:
-    if c in workspace:
-      normal_flag = False
+  else:
+    for c in _DENY_PATH_LIST:
+      if c in workspace:
+        normal_flag = False
   if not normal_flag:
     remove_configure_file()
     raise Exception("Invalid workspace path!")
@@ -851,6 +867,96 @@ def check_safe_workspace_path(workspace):
     return result
 
   raise Exception("Invalid workspace path!")
+
+def choose_compiler(environ_cp):
+  question = 'Do you want to use Clang to build ITEX host code?'
+  yes_reply = 'Clang will be used to compile ITEX host code.'
+  no_reply = 'GCC will be used to compile ITEX host code.'
+  var = int(
+      get_var(
+          environ_cp, 'ITEX_NEED_CLANG', None, True, question, yes_reply, no_reply
+      )
+  )
+  return var
+
+
+def set_clang_compiler_path(environ_cp):
+  """Set CLANG_COMPILER_PATH and environment variables.
+
+  Loop over user prompts for clang path until receiving a valid response.
+  Default is used if no input is given. Set CLANG_COMPILER_PATH and write
+  environment variables CC and BAZEL_COMPILER to .bazelrc.
+
+  Args:
+    environ_cp: (Dict) copy of the os.environ.
+
+  Returns:
+    string value for clang_compiler_path.
+  """
+  # Default path if clang-17 is installed by using apt-get install
+  default_clang_path = '/usr/lib/llvm-17/bin/clang'
+
+  clang_compiler_path = prompt_loop_or_load_from_env(
+      environ_cp,
+      var_name='CLANG_COMPILER_PATH',
+      var_default=default_clang_path,
+      ask_for_var='Please specify the path to clang executable.',
+      check_success=os.path.exists,
+      resolve_symlinks=True,
+      error_msg=(
+          'Invalid clang path. %s cannot be found. Note that ITEX now'
+          ' requires clang to compile. You may override this behavior by'
+          ' setting ITEX_NEED_CLANG=0'
+      ),
+  )
+
+  write_action_env_to_bazelrc('CLANG_COMPILER_PATH', clang_compiler_path)
+  if environ_cp.get('TF_NEED_DPCPP') == '0':
+      write_to_bazelrc('build --repo_env=CC=%s' % clang_compiler_path)
+      write_to_bazelrc('build --repo_env=BAZEL_COMPILER=%s' % clang_compiler_path)
+
+  return clang_compiler_path
+
+
+def retrieve_clang_version(clang_executable):
+  """Retrieve installed clang version.
+
+  Args:
+    clang_executable: (String) path to clang executable
+
+  Returns:
+    The clang version detected.
+  """
+  stderr = open(os.devnull, 'wb')
+  curr_version = run_shell([clang_executable, '--version'],
+                           allow_non_zero=True,
+                           stderr=stderr)
+
+  curr_version_split = curr_version.lower().split('clang version ')
+  if len(curr_version_split) > 1:
+    curr_version = curr_version_split[1].split()[0]
+
+  curr_version_int = convert_version_to_int(curr_version)
+  # Check if current clang version can be detected properly.
+  if not curr_version_int:
+    print('WARNING: current clang installation is not a release version.\n')
+    return None
+  if int(curr_version.split('.')[0]) == 17:
+    write_to_bazelrc('build --linkopt=-Wl,--undefined-version')
+    write_to_bazelrc('build --linkopt="-fuse-ld=lld"')
+  print('You have Clang %s installed.\n' % curr_version)
+  return curr_version
+
+
+# Disable clang extension that rejects type definitions within offsetof.
+# This was added in clang-16 by https://reviews.llvm.org/D133574.
+# Still required for clang-17.
+# Can be removed once upb is updated, since a type definition is used within
+# offset of in the current version of ubp. See
+# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183.
+def disable_clang_offsetof_extension(clang_version):
+  if int(clang_version.split('.')[0]) in (16, 17):
+    write_to_bazelrc('build --copt=-Wno-gnu-offsetof-extensions')
 
 
 def main():
@@ -877,7 +983,7 @@ def main():
   # environment variables.
   environ_cp = dict(os.environ)
 
-  current_bazel_version = check_bazel_version('3.1.0', '5.0.0')
+  current_bazel_version = check_bazel_version('5.3.0')
   _ITEX_CURRENT_BAZEL_VERSION = convert_version_to_int(current_bazel_version)
 
   reset_configure_bazelrc()
@@ -887,6 +993,13 @@ def main():
   create_build_configuration(environ_cp)
 
   set_action_env_var(environ_cp, 'TF_NEED_DPCPP', 'GPU', True)
+  if environ_cp.get('TF_NEED_DPCPP') == '0':
+    environ_cp['ITEX_NEED_CLANG'] = str(choose_compiler(environ_cp))
+  if environ_cp.get('ITEX_NEED_CLANG') == '1':
+    clang_compiler_path = set_clang_compiler_path(environ_cp)
+    clang_version = retrieve_clang_version(clang_compiler_path)
+    disable_clang_offsetof_extension(clang_version)
+
   if environ_cp.get('TF_NEED_DPCPP') == '1':
     set_dpcpp_toolkit_path(environ_cp)
     set_aot_config(environ_cp)
@@ -900,17 +1013,16 @@ def main():
   set_cc_opt_flags()
   set_system_libs_flag(environ_cp)
 
-  # Add a config option to build TensorFlow 2.0 API.
-  write_to_bazelrc('build:v2 --define=tf_api_version=2')
-
   system_specific_test_config(os.environ)
 
   print('Preconfigured Bazel build configs. You can use any of the below by '
         'adding "--config=<>" to your build command. See .bazelrc for more '
         'details.')
   if environ_cp.get('TF_NEED_DPCPP') == '1':
-    config_info_line('gpu', ('Build Intel® Extension for TensorFlow* '
+    config_info_line('xpu', ('Build Intel® Extension for TensorFlow* '
                      'with GPU support.'))
+    print('NOTE: XPU mode which supports both CPU and GPU is disbaled.'
+          '"--config=xpu" only supports GPU, which is same as "--config=gpu"\n')
   else:
     config_info_line('cpu', 'Build Intel® Extension for TensorFlow* '
                      'with CPU support.')

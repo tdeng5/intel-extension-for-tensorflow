@@ -2,6 +2,7 @@ package(default_visibility = ["//visibility:public"])
 
 load(":platform.bzl", "dpcpp_library_path")
 load("@local_config_dpcpp//dpcpp:build_defs.bzl", "if_dpcpp")
+load("@intel_extension_for_tensorflow//itex:itex.bzl", "cc_library", "if_using_nextpluggable_device")
 
 config_setting(
     name = "using_dpcpp",
@@ -10,11 +11,28 @@ config_setting(
     },
 )
 
+config_setting(
+    name = "using_xetla",
+    values = {
+        "define": "using_xetla=true",
+    },
+)
+
+config_setting(
+    name = "using_nextpluggable",
+    values = {
+        "define": "using_nextpluggable=true",
+    },
+)
+
 cc_library(
-    name = "dpcpp_headers",
+    name = "itex_gpu_headers",
     hdrs = glob([
-        "runtime/dpcpp_runtime.h",
+        "runtime/itex_gpu_runtime.h",
     ]),
+    copts = if_using_nextpluggable_device(
+      ["-DUSING_NEXTPLUGGABLE_DEVICE"],
+    ),
     includes = [
         ".",
         "include",

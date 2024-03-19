@@ -18,8 +18,12 @@ limitations under the License.
 #include <string>
 
 #ifndef INTEL_CPU_ONLY
-const char* const XeHPC_name = "0x0bd5";
-const char* const XeHPC_name_448 = "0x0bd6";
+const int32_t XeHPC_id = 0xbd0;
+const int32_t XeHPC_id_2 = 0xb60;
+
+// PVC 1550VG does not have XeMatrix engine, we distinguish it from other PVCs
+// by device id.
+const int32_t XeHPC_no_xmx_id = 0xbd4;
 
 bool IsXeHPC(sycl::device* device_ptr) {
   if (device_ptr == nullptr) {
@@ -28,19 +32,52 @@ bool IsXeHPC(sycl::device* device_ptr) {
       auto device_list = platform.get_devices();
       for (const auto& device : device_list) {
         if (device.is_gpu()) {
-          std::string name = device.get_info<sycl::info::device::name>();
-          if (name.find(XeHPC_name) != std::string::npos ||
-              name.find(XeHPC_name_448) != std::string::npos) {
+          auto id =
+              device.get_info<sycl::ext::intel::info::device::device_id>();
+          if ((id & 0xff0) == XeHPC_id || (id & 0xff0) == XeHPC_id_2) {
             return true;
           }
         }
       }
     }
   } else {
-    std::string name = device_ptr->get_info<sycl::info::device::name>();
-    if (name.find(XeHPC_name) != std::string::npos ||
-        name.find(XeHPC_name_448) != std::string::npos) {
+    auto id = device_ptr->get_info<sycl::ext::intel::info::device::device_id>();
+    if ((id & 0xff0) == XeHPC_id || (id & 0xff0) == XeHPC_id_2) {
       return true;
+    }
+  }
+  return false;
+}
+
+// TODO(ITEX): use sycl api like `devices.has(sycl::aspect::ext_intel_matrix)`
+// instead of device id once compiler supports XMX query interface.
+bool HasXMX(sycl::device* device_ptr) {
+  if (device_ptr == nullptr) {
+    auto platform_list = sycl::platform::get_platforms();
+    for (const auto& platform : platform_list) {
+      auto device_list = platform.get_devices();
+      for (const auto& device : device_list) {
+        if (device.is_gpu()) {
+          auto id =
+              device.get_info<sycl::ext::intel::info::device::device_id>();
+          if ((id & 0xff0) == XeHPC_id || (id & 0xff0) == XeHPC_id_2) {
+            if (id == XeHPC_no_xmx_id) {
+              return false;
+            } else {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  } else {
+    auto id = device_ptr->get_info<sycl::ext::intel::info::device::device_id>();
+    if ((id & 0xff0) == XeHPC_id || (id & 0xff0) == XeHPC_id_2) {
+      if (id == XeHPC_no_xmx_id) {
+        return false;
+      } else {
+        return true;
+      }
     }
   }
   return false;

@@ -16,7 +16,9 @@ limitations under the License.
 #ifndef ITEX_CORE_UTILS_ONEDNN_ONEDNN_POST_OP_UTIL_H_
 #define ITEX_CORE_UTILS_ONEDNN_ONEDNN_POST_OP_UTIL_H_
 
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,6 +26,10 @@ limitations under the License.
 #include "itex/core/utils/onednn/onednn_util.h"
 
 namespace itex {
+
+using kind = dnnl::primitive::kind;
+using algorithm = dnnl::algorithm;
+using memory = dnnl::memory;
 
 // Helper data struct to record necessary info for post op fusion.
 struct PostOpInfo {
@@ -39,13 +45,28 @@ struct PostOpInfo {
   dnnl::algorithm alg;
   float alpha;
   float beta;
-  float scale;
 };
 
 // Helper data struct to record necessary info for output_scales
 struct OutputScaleParam {
   int mask;
   std::vector<float> scales;
+};
+
+// FusedBNContext storing fused batchnorm messages for contructing oneDNN
+// post-ops operations
+struct FusedBNContext {
+  // FusedBatchNorm related memory
+  std::shared_ptr<dnnl::memory> bn_scale_mem;
+  std::shared_ptr<dnnl::memory> bn_mean_mem;
+  std::shared_ptr<dnnl::memory> bn_rsqrt_mem;
+  std::shared_ptr<dnnl::memory> bn_offset_mem;
+
+  // FusedBatchNorm related memory desc
+  std::shared_ptr<dnnl::memory::desc> bn_scale_md;
+  std::shared_ptr<dnnl::memory::desc> bn_mean_md;
+  std::shared_ptr<dnnl::memory::desc> bn_rsqrt_md;
+  std::shared_ptr<dnnl::memory::desc> bn_offset_md;
 };
 
 class PostOpUtil {
@@ -58,13 +79,16 @@ class PostOpUtil {
   // Return `true` if all ops are supported.
   bool AddOps(const std::vector<string>& fused_ops);
 
-  // Set extra input md for post binary op.
-  // Will report error if no binary op in post ops.
-  void SetBinaryInput(const dnnl::memory::desc& binary_md);
-
   // Set alpha for `LeakyRelu`.
   // Will report error if no `LeakyRelu` in post ops.
   void SetLeakyReluAlpha(float alpha);
+
+  // Set epsilon for `FusedBatchNorm`
+  void set_epsilon(float epsilon) { bn_epsilon_ = epsilon; }
+
+  // Set alpha/beta for `Linear`.
+  // Will report error if no `Linear` in post ops.
+  void SetLinearAlphaBeta(float alpha, float beta);
 
   // Set scale for post op. Sometimes the scale is only available during node
   // execution, so we need to set scale to the post op which is created in node
@@ -76,8 +100,27 @@ class PostOpUtil {
   // scale, which is only available in node execution
   void SetOutputScale(const std::vector<float>& scales);
 
+  std::vector<float>& GetOutputScale() { return output_scale_param_.scales; }
+
   // Set post op and output scale attribution for `attr`.
-  void SetPostOpAttr(dnnl::primitive_attr* attr);
+  // If `HasBinary()`, an extra parameter `md_list` is required.
+  void SetPostOpAttr(dnnl::primitive_attr* attr,
+                     const std::vector<dnnl::memory::desc>& md_list = {});
+
+  // Set batchnorm and post op attribution for `attr`.
+  void SetBNPostOpAttr(dnnl::primitive_attr* attr,
+                       const std::vector<dnnl::memory::desc>& md_list = {});
+
+  // Build batchnorm context needed for post-ops primitive construction
+  void BuildBNContext(memory::format_tag* data_layout,
+                      memory::dims* fuse_bn_dims, dnnl::engine* engine);
+
+  // Set batchnorm post-ops onednn memory pointing to ready buffers
+  void SetBNMemory(const Tensor& bn_scale_tensor, const Tensor& bn_mean_tensor,
+                   const Tensor& bn_offset_tensor,
+                   const Tensor& bn_rsqrt_tensor);
+
+  void AddBNPrimArgs(std::unordered_map<int, memory>* fwd_primitives_args_);
 
   // Check the given elewise op is supported by oneDNN or not.
   static bool IsSupportedActivation(const absl::string_view op_name);
@@ -86,15 +129,16 @@ class PostOpUtil {
   inline bool HasActivation() { return has_activation_; }
   inline bool HasAdd() { return has_add_; }
   inline bool HasBias() { return has_bias_; }
-  inline bool HasMul() { return has_mul_; }
-  inline bool HasBinary() { return has_binary_; }
+  inline bool HasBN() { return has_bn_; }
+  inline bool HasBinary() { return binary_num_ != 0; }
   inline bool HasLeakyRelu() { return has_leaky_relu_; }
+  inline bool HasLinear() { return has_linear_; }
 
-  // TODO(itex): currently both INT8 output scale and batchmatmul + mul
-  // fusion use HasOutputScales(). We might need functions to separate
-  // them
   inline bool HasOutputScales() { return has_output_scales_; }
   inline bool HasRequantize() { return has_requantize_; }
+
+  // Record op number to support multiple Binary post op fusion.
+  inline int GetBinaryNum() { return binary_num_; }
 
  private:
   // Return the read-only table contains supported `PostOpInfo`.
@@ -110,7 +154,8 @@ class PostOpUtil {
   // Reasons for lazy evalution is that once postop attribures are set, OneDnn
   // doesn't allow to change the postop scales. So we have to set scale in
   // Compute(), when all context information is available
-  void SetPostOp(dnnl::post_ops* post_op);
+  void SetPostOp(dnnl::post_ops* post_op,
+                 const std::vector<dnnl::memory::desc>& md_list);
 
   // Save the post op and its corresponding scale factor
   // The first element is post op name, second element is corresponding scale
@@ -124,22 +169,28 @@ class PostOpUtil {
   // Note `BiasAdd` is a special case, it doesn't have post op info because
   // it will be fused in primitive directly.
   bool has_bias_ = false;
-  // Used in BatchMatMul + Mul fusion, currently implemented by
-  // set_output_scales
-  bool has_mul_ = false;
-  bool has_binary_ = false;
+  // Whether have batchnorm fusion
+  bool has_bn_ = false;
   // Use this flag to check whether need to set alpha for `LeakyRelu`.
   bool has_leaky_relu_ = false;
+  // Use this flag to check whether has linear post op
+  bool has_linear_ = false;
 
   // Flags for INT8.
   bool has_output_scales_ = false;
   bool has_requantize_ = false;
 
+  // Stores fused batchnorm constructing message
+  FusedBNContext bn_context_;
+
+  // Helper var for multilpe Binary post op fusion.
+  int binary_num_ = 0;
   // Helper vars for post op execution.
   float leaky_relu_alpha_ = NAN;
+  float linear_alpha_ = NAN;
+  float linear_beta_ = NAN;
 
-  // Helper var for input of post binary op.
-  std::vector<dnnl::memory::desc> binary_md_list_;
+  float bn_epsilon_ = 0.0001;
 };
 
 }  // namespace itex

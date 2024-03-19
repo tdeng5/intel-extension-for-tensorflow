@@ -16,6 +16,9 @@
 # pylint: disable=missing-module-docstring
 from tensorflow.python.framework import ops
 from intel_extension_for_tensorflow.python.ops.load_ops_library import load_ops_library
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import gen_nn_ops
+from tensorflow.python.ops import array_ops
 
 @ops.RegisterGradient("Gelu")
 def _gelu_grad(op, grad):
@@ -23,8 +26,15 @@ def _gelu_grad(op, grad):
       grad, op.inputs[0], op.get_attr("approximate")
   )
 
+@ops.RegisterGradient("ITEXGelu")
+def _itex_gelu_grad(op, grad):
+  return load_ops_library.itex_gelu_grad(
+      grad, op.inputs[0], op.get_attr("approximate")
+  )
+
 @ops.RegisterGradient("LayerNorm")
 def _layer_norm_grad(op, *grad):
+  """A dummy docstring."""
   x = op.inputs[0]
   grad_y = grad[0]
   scale = op.inputs[1]
@@ -35,9 +45,27 @@ def _layer_norm_grad(op, *grad):
   reserve_space_1 = op.outputs[1]
   reserve_space_2 = op.outputs[2]
   dx, dscale, doffset, _, _ = grad_fun(
-    y_backprop=grad_y, x=x, scale=scale, reserve_space_1=reserve_space_1,
-    reserve_space_2=reserve_space_2, epsilon=epsilon, is_training=is_training,
-    data_format=data_format)
+      y_backprop=grad_y, x=x, scale=scale, reserve_space_1=reserve_space_1,
+      reserve_space_2=reserve_space_2, epsilon=epsilon, is_training=is_training,
+      data_format=data_format)
+  return dx, dscale, doffset
+
+@ops.RegisterGradient("ITEXLayerNorm")
+def _itex_layer_norm_grad(op, *grad):
+  """A dummy docstring."""
+  x = op.inputs[0]
+  grad_y = grad[0]
+  scale = op.inputs[1]
+  epsilon = op.get_attr("epsilon")
+  is_training = op.get_attr("is_training")
+  data_format = op.get_attr("data_format")
+  grad_fun = load_ops_library.itex_layer_norm_grad
+  reserve_space_1 = op.outputs[1]
+  reserve_space_2 = op.outputs[2]
+  dx, dscale, doffset, _, _ = grad_fun(
+      y_backprop=grad_y, x=x, scale=scale, reserve_space_1=reserve_space_1,
+      reserve_space_2=reserve_space_2, epsilon=epsilon, is_training=is_training,
+      data_format=data_format)
   return dx, dscale, doffset
 
 @ops.RegisterGradient("ItexRnn")
@@ -65,5 +93,46 @@ def _itex_rnn_grad(op, *grad):
       # seed=op.get_attr("seed"),
       # seed2=op.get_attr("seed2"),
       num_proj=op.get_attr("num_proj"),
-      var_seq_length=op.get_attr("var_seq_length")) + (None, None, None, )
-  
+      var_seq_length=op.get_attr("var_seq_length")) + (None, None, None,)
+
+@ops.RegisterGradient("ScaledDotProductAttention")
+def _scaled_dot_product_attention_grad(op, *grad):
+  dq, dk, dv = load_ops_library.scaled_dot_product_attention_grad(
+      query=op.inputs[0],
+      key=op.inputs[1],
+      value=op.inputs[2],
+      dropout_mask=op.inputs[4],
+      atten=op.outputs[1],
+      atten_dp=op.outputs[2],
+      output_backprop=grad[0],
+      dropout_prob=op.get_attr("dropout_prob"))
+  return (dq, dk, dv, None, None)
+
+@ops.RegisterGradient("FlashScaledDotProductAttention")
+def _flash_scaled_dot_product_attention_grad(op, *grad):
+  dq, dk, dv = load_ops_library.flash_scaled_dot_product_attention_grad(
+      query=op.inputs[0],
+      key=op.inputs[1],
+      value=op.inputs[2],
+      out=op.outputs[0],
+      atten_mask=op.inputs[3],
+      output_backprop=grad[0],
+      dropout_mask=op.inputs[4],
+      l=op.outputs[1],
+      dropout_prob=op.get_attr("dropout_prob"),
+      use_mask=op.get_attr("use_mask"))
+  return (dq, dk, dv, None, None)
+
+@ops.RegisterGradient("FusedDenseBiasAddGelu")
+def _itex_fused_dense_bias_add_gelu_grad(op, *grad):
+  feature = op.inputs[0]
+  weights = op.inputs[1]
+  workspace = op.outputs[1]
+  output_backprop = grad[0]
+  dgelu = math_ops.mul(workspace, output_backprop)
+  # TODO(zw): fuse dbias and dweights ? replace reduce_sum with biasAddgrad
+  # dbias = math_ops.reduce_sum(dgelu, axis=0)  
+  dbias = gen_nn_ops.bias_add_grad(dgelu)
+  dweights = math_ops.matmul(feature, dgelu, transpose_a=True)
+  dfeature = math_ops.matmul(dgelu, weights, transpose_b=True)
+  return dfeature, dweights, dbias

@@ -16,6 +16,7 @@ limitations under the License.
 #include <cmath>
 #include <limits>
 
+#include "itex/core/kernels/common/host_data_cache.h"
 #include "itex/core/utils/errors.h"
 #include "itex/core/utils/onednn/onednn_layout_util.h"
 #include "itex/core/utils/onednn/onednn_util.h"
@@ -94,7 +95,7 @@ class OneDnnRequantizePerChannelOp : public OpKernel {
       }
 
       dnnl::primitive_attr reorder_attr;
-      reorder_attr.set_output_scales(2, scales);
+      reorder_attr.set_scales_mask(DNNL_ARG_SRC, 2);
 
       memory::dims dims_onednn_order =
           TFShapeToOneDnnDimsInNC(input.shape(), FORMAT_NHWC);
@@ -118,15 +119,24 @@ class OneDnnRequantizePerChannelOp : public OpKernel {
             const_cast<quint8*>(output->flat<quint8>().data()));
       }
       auto onednn_engine = CreateDnnlEngine<Device>(*context);
-
+      float* output_scale_ptr =
+          output_scale_cache_.GetCachedPtr(context, scales.data(), depth);
+      dnnl::memory output_scales_mem({{static_cast<dnnl_dim_t>(depth)},
+                                      dnnl::memory::data_type::f32,
+                                      dnnl::memory::format_tag::x},
+                                     onednn_engine,
+                                     reinterpret_cast<void*>(output_scale_ptr));
       auto src_mem = CreateDnnlMemory(input_md, onednn_engine, input_buf);
       auto dst_mem = CreateDnnlMemory(output_md, onednn_engine, output_buf);
 
       dnnl::reorder reorder_prim =
           dnnl::reorder(src_mem, dst_mem, reorder_attr);
       auto onednn_stream = CreateDnnlStream(*context, onednn_engine);
-      std::unordered_map<int, memory> reorder_args = {{DNNL_ARG_SRC, src_mem},
-                                                      {DNNL_ARG_DST, dst_mem}};
+      std::unordered_map<int, memory> reorder_args = {
+          {DNNL_ARG_SRC, src_mem},
+          {DNNL_ARG_DST, dst_mem},
+          {DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, output_scales_mem},
+      };
       reorder_prim.execute(onednn_stream, reorder_args);
 
       Tensor* output_min = nullptr;
@@ -159,6 +169,7 @@ class OneDnnRequantizePerChannelOp : public OpKernel {
   const int kOutputMaxIndex = 2;
   // TODO(itex): use template para T instead of out_type_
   DataType out_type_;
+  HostDataCache<Device, float> output_scale_cache_;
 };
 
 // TODO(itex): Enable OneDnnRequantizePerChannel for CPUDevice

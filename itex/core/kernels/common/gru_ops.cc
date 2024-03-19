@@ -40,7 +40,7 @@ namespace itex {
   GRU Forward op
 ==================================================================*/
 template <typename Device, typename T, typename GruType>
-class OneDnnGRUForwardOp : public OpKernel {
+class GRUForwardOp : public OpKernel {
  protected:
   bool is_filter_const_ = false;
   WeightCacheManager<T> weight_layer_cache_manager_;
@@ -50,13 +50,13 @@ class OneDnnGRUForwardOp : public OpKernel {
   GruType augru_prim;
 
  public:
-  explicit OneDnnGRUForwardOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
+  explicit GRUForwardOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
     if (ctx->HasAttr("is_filter_const")) {
       OP_REQUIRES_OK(ctx, ctx->GetAttr("is_filter_const", &is_filter_const_));
     }
   }
 
-  ~OneDnnGRUForwardOp() {}
+  ~GRUForwardOp() {}
 
   void Compute(OpKernelContext* ctx) override {
     // Tensors for input/output memory.
@@ -129,26 +129,26 @@ class OneDnnGRUForwardOp : public OpKernel {
       // Optional memory descriptors for recurrent data.
       auto dst_iter_md = memory::desc();
 
-      // Create operation descriptor.
-      typename GruType::desc* desc;
-      auto augru_desc = augru_forward::desc(
-          prop_kind::forward_inference,
-          rnn_direction::unidirectional_left2right, src_layer_md, src_iter_md,
-          attention_md, augru_weights_layer_md, augru_weights_iter_md, bias_md,
-          dst_layer_md, dst_iter_md);
-      auto gru_desc = gru_forward::desc(
-          prop_kind::forward_inference,
-          rnn_direction::unidirectional_left2right, src_layer_md, src_iter_md,
-          augru_weights_layer_md, augru_weights_iter_md, bias_md, dst_layer_md,
-          dst_iter_md);
-      if (std::is_same<GruType, augru_forward>()) {
-        desc = reinterpret_cast<typename GruType::desc*>(&augru_desc);
-      } else {
-        desc = reinterpret_cast<typename GruType::desc*>(&gru_desc);
-      }
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
-      augru_pd = typename GruType::primitive_desc(*desc, attr, dnnl_engine);
+      dnnl::augru_forward::primitive_desc augru_pd_tmp(
+          dnnl_engine, prop_kind::forward_inference,
+          rnn_direction::unidirectional_left2right, src_layer_md, src_iter_md,
+          attention_md, augru_weights_layer_md, augru_weights_iter_md, bias_md,
+          dst_layer_md, dst_iter_md, attr);
+      dnnl::gru_forward::primitive_desc gru_pd_tmp(
+          dnnl_engine, prop_kind::forward_inference,
+          rnn_direction::unidirectional_left2right, src_layer_md, src_iter_md,
+          augru_weights_layer_md, augru_weights_iter_md, bias_md, dst_layer_md,
+          dst_iter_md, attr);
+
+      if (std::is_same<GruType, augru_forward>()) {
+        augru_pd =
+            *reinterpret_cast<typename GruType::primitive_desc*>(&augru_pd_tmp);
+      } else {
+        augru_pd =
+            *reinterpret_cast<typename GruType::primitive_desc*>(&gru_pd_tmp);
+      }
     }
 
     //
@@ -388,8 +388,7 @@ class OneDnnGRUForwardOp : public OpKernel {
                                   memory::dim cell_size,
                                   memory::dim input_size) {
     if (augru_pd.get(true) == nullptr) return;
-
-    auto src_dims = augru_pd.src_layer_desc().dims();
+    auto src_dims = augru_pd.src_layer_desc().get_dims();
     if (src_dims[0] == TimeDim && src_dims[1] == batch_size &&
         src_dims[2] == cell_size)
       return;
@@ -537,7 +536,7 @@ class OneDnnGRUForwardOp : public OpKernel {
 };
 
 template <typename Device, typename T, typename GruType>
-class MklGRUForwardOp : public OneDnnGRUForwardOp<Device, T, GruType> {
+class MklGRUForwardOp : public GRUForwardOp<Device, T, GruType> {
  protected:
   bool X_format_tnc = true;
   bool AUX_format_tnc = true;
@@ -547,7 +546,7 @@ class MklGRUForwardOp : public OneDnnGRUForwardOp<Device, T, GruType> {
 
  public:
   explicit MklGRUForwardOp(OpKernelConstruction* ctx)
-      : OneDnnGRUForwardOp<Device, T, GruType>(ctx) {
+      : GRUForwardOp<Device, T, GruType>(ctx) {
     std::string format = "";
     if (ctx->HasAttr("x_format")) {
       OP_REQUIRES_OK(ctx, ctx->GetAttr("x_format", &format));
@@ -569,7 +568,7 @@ class MklGRUForwardOp : public OneDnnGRUForwardOp<Device, T, GruType> {
     h_n_tensor = &h_n_tensor_local;
     x_reorder_tensor = &x_reorder_tensor_local;
     au_x_reorder_tensor = &au_x_reorder_tensor_local;
-    this->OneDnnGRUForwardOp<Device, T, GruType>::Compute(ctx);
+    this->GRUForwardOp<Device, T, GruType>::Compute(ctx);
     h_n_tensor = nullptr;
     x_reorder_tensor = nullptr;
     au_x_reorder_tensor = nullptr;
@@ -611,7 +610,7 @@ class MklGRUForwardOp : public OneDnnGRUForwardOp<Device, T, GruType> {
             OneDnnType<T>(), memory::format_tag::abcd),
         dnnl_engine, GetTensorBuffer<T>(*h_n_tensor));
     auto h_out_desc = output_mem.get_desc();
-    auto src_dims = h_out_desc.dims();
+    auto src_dims = h_out_desc.get_dims();
     auto src_desc = memory::desc({1, src_dims[0], src_dims[1], src_dims[2]},
                                  OneDnnType<T>(), memory::format_tag::abcd);
     memory src_sub_mem =
@@ -658,10 +657,10 @@ class MklGRUForwardOp : public OneDnnGRUForwardOp<Device, T, GruType> {
 #define REGISTER_GRU_KERNELS(T)                                            \
   REGISTER_KERNEL_BUILDER(                                                 \
       Name("_ITEXGRUCell").Device(DEVICE_CPU).TypeConstraint<T>("T"),      \
-      OneDnnGRUForwardOp<CPUDevice, T, dnnl::gru_forward>);                \
+      GRUForwardOp<CPUDevice, T, dnnl::gru_forward>);                      \
   REGISTER_KERNEL_BUILDER(                                                 \
       Name("_ITEXAUGRUCell").Device(DEVICE_CPU).TypeConstraint<T>("T"),    \
-      OneDnnGRUForwardOp<CPUDevice, T, dnnl::augru_forward>);              \
+      GRUForwardOp<CPUDevice, T, dnnl::augru_forward>);                    \
   REGISTER_KERNEL_BUILDER(                                                 \
       Name("_ITEXForwardGRU").Device(DEVICE_CPU).TypeConstraint<T>("T"),   \
       MklGRUForwardOp<CPUDevice, T, dnnl::gru_forward>);                   \

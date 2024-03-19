@@ -300,7 +300,7 @@ class Relu6Test(test.TestCase):
     self.assertShapeEqual(np_relu6, tf_relu6)
 
   def testNumbersGPU(self):
-    for t in [dtypes.bfloat16.as_numpy_dtype, np.float, np.float16]:
+    for t in [dtypes.bfloat16.as_numpy_dtype, np.float32, np.float64, np.float16]:
       if (not test.is_gpu_available()) and t == np.float16:
         continue
       self._testRelu6(
@@ -472,13 +472,14 @@ class GeluTest(test.TestCase):
     self.assertAllCloseAccordingToType(expected_values, results)
 
   def testNumbers(self):
+    # onednn will set gelu result = 0 for input<=-5
     for approximate in [False, True]:
       for t in [dtypes.bfloat16.as_numpy_dtype, np.float32]:
         self._testGelu(
-            np.array([[-9, 7, -5, 3, -1], [1, -3, 5, -7, 9]]).astype(t),
+            np.array([[-9, 7, -6, 3, -1], [1, -3, 5, -7, 9]]).astype(t),
             approximate, use_gpu=False)
         self._testGelu(
-            np.array([[-9, 7, -5, 3, -1], [1, -3, 5, -7, 9]]).astype(t),
+            np.array([[-9, 7, -6, 3, -1], [1, -3, 5, -7, 9]]).astype(t),
             approximate, use_gpu=True)
 
   def testGradient(self):

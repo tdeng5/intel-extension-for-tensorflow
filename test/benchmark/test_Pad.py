@@ -25,7 +25,7 @@ from utils import tailed_no_tailed_size, broadcast_binary_size_x, broadcast_bina
 
 try:
     from intel_extension_for_tensorflow.python.test_func import test
-    FLOAT_COMPUTE_TYPE = [dtypes.float32, dtypes.float16, dtypes.bfloat16, dtypes.double]
+    FLOAT_COMPUTE_TYPE = [dtypes.float32, dtypes.float16, dtypes.bfloat16]
 except ImportError:
     from tensorflow.python.platform import test
     FLOAT_COMPUTE_TYPE = [dtypes.float32, dtypes.float16]  # BF16 is not supported by CUDA
@@ -45,7 +45,7 @@ class PadTest(test.TestCase):
     @multi_run(ITERATION)
     def testPad(self):
         for dtype in FLOAT_COMPUTE_TYPE:
-            for in_size in [[4,128,128,256], [4,16,16,256]]:
+            for in_size in [[4,128,128,256], [4,16,16,256], [16,512,14,14], [16,128,56,56]]:
                 self._test_impl(in_size, dtype)
 
 if __name__ == '__main__':

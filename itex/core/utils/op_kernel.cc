@@ -15,12 +15,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifndef ITEX_BUILD_JAX
 #include "itex/core/utils/op_kernel.h"
 
 #include <iostream>
 #include <string>
 
-#include "itex/core/devices/xpu_device_util.h"
+#include "itex/core/graph/config_util.h"
+#ifndef INTEL_CPU_ONLY
+#include "itex/core/utils/gpu_resource_mgr_pool.h"
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif
+#endif
 #include "itex/core/utils/kernel_def_util.h"
 #include "itex/core/utils/op_requires.h"
 #include "itex/core/utils/padding.h"
@@ -70,8 +77,12 @@ void EmptyCopyFunctor(TF_OpKernelContext* tf_ctx, TF_Tensor* tf_source,
 
 int OpKernelContext::num_inputs() const { return TF_NumInputs(ctx_); }
 
+bool OpKernelContext::input_is_ref(int index) const {
+  return TF_IsRefInput(ctx_, index, status_);
+}
+
 DataType OpKernelContext::input_dtype(int index) const {
-  if (inputs_ != nullptr) {
+  if (inputs_ != nullptr && inputs_->at(index) != nullptr) {
     return inputs_->at(index)->dtype();
   } else {
     ITEX_CHECK(false)
@@ -117,6 +128,19 @@ const Tensor& OpKernelContext::input(int index) const {
   return *inputs_->at(index);
 }
 
+#ifndef INTEL_CPU_ONLY
+ResourceMgr* OpKernelContext::resource_manager() {
+  ITEX_GPUStream* itex_gpu_stream = OpKernelContext::GetDeviceStream();
+  auto error = GetResourceMgr(itex_gpu_stream, &resource_mgr);
+  if (error != ITEX_GPU_SUCCESS) {
+    CtxFailure(__FILE__, __LINE__,
+               errors::Internal("Error to call GetResourceMgr with error ",
+                                ITEX_GPUGetErrorName(error)));
+  }
+  return resource_mgr;
+}
+#endif
+
 Status OpKernelContext::input(StringPiece name, const Tensor** tensor) {
   TF_Status* status = TF_NewStatus();
   if (inputsMap_.find(name) == inputsMap_.end()) {
@@ -139,7 +163,15 @@ Status OpKernelContext::input(StringPiece name, const Tensor** tensor) {
 void* OpKernelContext::tensor_data(int index) {
   TF_Tensor* tensor = nullptr;
   TF_GetInput(ctx_, index, &tensor, status_);
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  void* data;
+  if (npdConfig_.IfEnableNextPluggableDevice())
+    data = tensor_get_raw_data(tensor);
+  else
+    data = TF_TensorData(tensor);
+#else
   void* data = TF_TensorData(tensor);
+#endif
   TF_DeleteTensor(tensor);
   return data;
 }
@@ -163,6 +195,8 @@ bool OpKernelContext::is_input_same(int index, std::vector<int64> shape) {
   TF_DeleteTensor(tensor);
   return true;
 }
+
+int64_t OpKernelContext::step_id() const { return TF_StepId(ctx_); }
 
 // Status OpKernelContext::set_output(StringPiece name, const Tensor& tensor) {
 //   TF_Status* status = TF_NewStatus();
@@ -202,6 +236,39 @@ Status OpKernelContext::forward_input_or_allocate_output(
       candidate_input_indices.size(), output_index,
       output_shape.dim_sizes().data(), output_shape.dims(), forwarded_input,
       status_);
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  if (pointer_is_pjrt_tensor(tensor)) {
+    PJRT_Buffer* pjrt_c_buffer = TF_GetPjRtCBuffer(tensor, status_);
+    if (pjrt_c_buffer == nullptr) {
+      int device_id = TF_GetDeviceId(ctx_);
+      static PJRT_Client* pjrt_c_client = TF_GetPjRtCClient("XPU", status_);
+      int rank = output_shape.dims();
+      std::vector<int64_t> dimensions(rank);
+      for (int d = 0; d < rank; ++d) {
+        dimensions[d] = output_shape.dim_size(d);
+      }
+      DataType out_type =
+          static_cast<DataType>(expected_output_dtype(output_index));
+      size_t size = output_shape.num_elements() * DataTypeSize(out_type);
+      if (npdConfig_.isXlaAutoJitEnabled()) {
+        std::vector<int64_t> layout(rank);
+        std::iota(layout.rbegin(), layout.rend(), 0);
+        TF_CreatePjRtBuffer(
+            tensor,
+            ITEXCreateSEPjRtBuffer(device_id, DataTypeString(out_type),
+                                   dimensions, layout, pjrt_c_client),
+            "XPU", status_);
+      } else {
+        TF_CreatePjRtBuffer(
+            tensor,
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(out_type),
+                                 &dimensions, size, pjrt_c_client),
+            "XPU", status_);
+      }
+    }
+  }
+#endif
+
   if (outputs_[output_index] == nullptr) {
     std::shared_ptr<Tensor> ptr = std::make_shared<Tensor>(
         static_cast<DataType>(expected_output_dtype(output_index)),
@@ -266,9 +333,97 @@ Status OpKernelContext::output_list(StringPiece name, OpOutputList* list) {
 Status OpKernelContext::allocate_output(int index, const TensorShape& shape,
                                         Tensor** tensor) {
   DataType out_type = static_cast<DataType>(expected_output_dtype(index));
-  TF_Tensor* output = TF_AllocateOutput(
-      ctx_, index, static_cast<TF_DataType>(out_type), shape.dim_sizes().data(),
-      shape.dims(), shape.num_elements() * DataTypeSize(out_type), status_);
+  size_t size = shape.num_elements() * DataTypeSize(out_type);
+  TF_Tensor* output =
+      TF_AllocateOutput(ctx_, index, static_cast<TF_DataType>(out_type),
+                        shape.dim_sizes().data(), shape.dims(), size, status_);
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  if (pointer_is_pjrt_tensor(output)) {
+    static bool is_pjrt_buffer_cached = npdConfig_.isPJRTBufferCached();
+
+    int device_id = TF_GetDeviceId(ctx_);
+    static PJRT_Client* pjrt_c_client = TF_GetPjRtCClient("XPU", status_);
+    int rank = shape.dims();
+    std::vector<int64_t> dimensions(rank);
+    std::vector<int64_t> layout(rank);
+
+    for (int d = 0; d < rank; ++d) {
+      dimensions[d] = shape.dim_size(d);
+    }
+
+    std::iota(layout.rbegin(), layout.rend(), 0);
+
+    if (npdConfig_.isXlaAutoJitEnabled()) {
+      std::vector<int64_t> layout(rank);
+      std::iota(layout.rbegin(), layout.rend(), 0);
+      TF_CreatePjRtBuffer(
+          output,
+          ITEXCreateSEPjRtBuffer(device_id, DataTypeString(out_type),
+                                 dimensions, layout, pjrt_c_client),
+          "XPU", status_);
+    } else if (is_pjrt_buffer_cached) {
+      TensorShape& prev_output_shape = (*output_shape_in_first_step_)[index];
+      auto* itex_pjrt_buffer = (*itex_pjrt_buffer_ptr_)[index].get();
+
+      if (itex_pjrt_buffer && prev_output_shape == shape) {
+        auto* pjrt_buffer = itex_pjrt_buffer->get_pjrt_buffer();
+        ITEX_VLOG(1) << "Enter PJRT_Buffer cache process, try to recover "
+                        "cached PJRT_Buffer "
+                     << pjrt_buffer;
+        if (ITEXRecoverPjRtBuffer(pjrt_buffer)) {
+          ITEX_VLOG(1) << "Recover PJRT_Buffer " << pjrt_buffer
+                       << " successful.";
+          TF_CreatePjRtBuffer(output, pjrt_buffer, "XPU", status_);
+        } else {
+          // This path is used for operators with same op_type and sharing the
+          // same context in eager mode. Entering this path means another
+          // operator is still using device memory and would result in failure
+          // of PJRT Buffer's recovery, so just create a new one to avoid
+          // conflict.
+          ITEX_VLOG(1) << "Entered PJRT_Buffer cache procee but failed in "
+                          "recovering PJRT_Buffer "
+                       << pjrt_buffer;
+          is_pjrt_buffer_cached = false;
+          TF_CreatePjRtBuffer(
+              output,
+              ITEXCreatePjRtBuffer(device_id, DataTypeString(out_type),
+                                   &dimensions, size, pjrt_c_client),
+              "XPU", status_);
+        }
+      } else if (!itex_pjrt_buffer) {
+        (*itex_pjrt_buffer_ptr_)[index] = std::make_shared<ITEX_PJRT_Buffer>(
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(out_type),
+                                 &dimensions, size, pjrt_c_client));
+        auto* pjrt_buffer = (*itex_pjrt_buffer_ptr_)[index]->get_pjrt_buffer();
+        ITEXSetHoldPjRtBuffer(pjrt_buffer);
+        ITEX_VLOG(1)
+            << "Initialize PJRT_Buffer cache and create a new PJRT_Buffer "
+            << pjrt_buffer;
+        if (shape.num_elements()) (*output_shape_in_first_step_)[index] = shape;
+
+        TF_CreatePjRtBuffer(output, pjrt_buffer, "XPU", status_);
+      } else {
+        // Entering this path means PJRT_Buffer cache mechanism is not suitable
+        // for current case.
+        is_pjrt_buffer_cached = false;
+        auto* pjrt_buffer =
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(out_type),
+                                 &dimensions, size, pjrt_c_client);
+        ITEX_VLOG(1) << "Can't enter PJRT_Buffer cache process and create a "
+                        "new PJRT_Buffer "
+                     << pjrt_buffer;
+        TF_CreatePjRtBuffer(output, pjrt_buffer, "XPU", status_);
+      }
+    } else {
+      TF_CreatePjRtBuffer(
+          output,
+          ITEXCreatePjRtBuffer(device_id, DataTypeString(out_type), &dimensions,
+                               size, pjrt_c_client),
+          "XPU", status_);
+    }
+  }
+#endif
+
   if (outputs_[index] == nullptr) {
     std::shared_ptr<Tensor> ptr = std::make_shared<Tensor>(
         static_cast<DataType>(expected_output_dtype(index)), shape, output);
@@ -286,6 +441,35 @@ Status OpKernelContext::allocate_temp(
   TF_Tensor* tmp = TF_AllocateTemp(ctx_, static_cast<TF_DataType>(type),
                                    shape.dim_sizes().data(), shape.dims(),
                                    &allocator_attr.plugin_attr(), status_);
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  if (pointer_is_pjrt_tensor(tmp)) {
+    int device_id = TF_GetDeviceId(ctx_);
+    static PJRT_Client* pjrt_c_client = TF_GetPjRtCClient("XPU", status_);
+
+    int rank = shape.dims();
+    std::vector<int64_t> dimensions(rank);
+    for (int d = 0; d < rank; ++d) {
+      dimensions[d] = shape.dim_size(d);
+    }
+    size_t size = shape.num_elements() * DataTypeSize(type);
+    if (npdConfig_.isXlaAutoJitEnabled()) {
+      std::vector<int64_t> layout(rank);
+      std::iota(layout.rbegin(), layout.rend(), 0);
+      TF_CreatePjRtBuffer(
+          tmp,
+          ITEXCreateSEPjRtBuffer(device_id, DataTypeString(type), dimensions,
+                                 layout, pjrt_c_client),
+          "XPU", status_);
+    } else {
+      TF_CreatePjRtBuffer(
+          tmp,
+          ITEXCreatePjRtBuffer(device_id, DataTypeString(type), &dimensions,
+                               size, pjrt_c_client),
+          "XPU", status_);
+    }
+  }
+#endif
+
   Tensor t(type, shape, tmp);
   *out_temp = std::move(t);
 
@@ -471,6 +655,7 @@ Status OpKernelConstruction::GetAttr<std::vector<int32_t>>(
                                            list_size, status_);
   return StatusFromTF_Status(status_);
 }
+
 template <>
 Status OpKernelConstruction::GetAttr<std::vector<DataType>>(
     StringPiece attr_name, std::vector<DataType>* value) const {
@@ -541,12 +726,24 @@ Status OpKernelConstruction::GetAttr<TensorShape>(StringPiece attr_name,
 
   TF_OpKernelConstruction_GetAttrSize(ctx_, "shape", &list_size, &total_size,
                                       status_);
-  shape_list.resize(list_size);
-  TF_OpKernelConstruction_GetAttrInt64List(ctx_, "shape", shape_list.data(),
-                                           list_size, status_);
+  shape_list.resize(total_size);
+  TF_OpKernelConstruction_GetAttrTensorShape(ctx_, "shape", shape_list.data(),
+                                             total_size, status_);
   for (auto dim : shape_list) {
     shape->AddDim(dim);
   }
+  return StatusFromTF_Status(status_);
+}
+
+template <>
+Status OpKernelConstruction::GetAttr<Tensor>(StringPiece attr_name,
+                                             Tensor* value) const {
+  std::string name(attr_name.data(), attr_name.size());
+  TF_Tensor* buf = nullptr;
+
+  TF_OpKernelConstruction_GetAttrTensor(ctx_, name.c_str(), &buf, status_);
+  *value = Tensor(buf);
+
   return StatusFromTF_Status(status_);
 }
 
@@ -581,7 +778,15 @@ const char* OpKernelConstruction::OpName() const {
 }
 
 OpKernel::OpKernel(OpKernelConstruction* context)
-    : op_name(context->OpName()) {}
+#ifndef USING_NEXTPLUGGABLE_DEVICE
+    : op_name(context->OpName()) {
+}
+#else
+    : op_name(context->OpName()),
+      output_shape_in_first_step_(OUTPUT_SIZE, TensorShape()),
+      itex_pjrt_buffer_(OUTPUT_SIZE, nullptr) {
+}
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 
 OpKernel::~OpKernel() {}
 
@@ -591,7 +796,7 @@ string OpKernel::ShapeTraceString(const OpKernelContext& ctx) const {
   std::vector<string> tensor_shapes;
   tensor_shapes.reserve(num_inputs);
   for (int i = 0; i < num_inputs; i++) {
-    if (ctx.input(i).GetTFTensor() == nullptr) {
+    if (ctx.input_is_ref(i) || ctx.input(i).GetTFTensor() == nullptr) {
       tensor_shapes.emplace_back();  // Placeholder
       continue;
     }
@@ -615,6 +820,13 @@ string OpKernel::TraceString(const OpKernelContext& ctx) const {
   }
   return trace_string;
 }
+
+void AsyncOpKernel::Compute(OpKernelContext* context) {
+  Notification n;
+  this->ComputeAsync(context, [&n]() { n.Notify(); });
+  n.WaitForNotification();
+}
+
 KernelDefBuilder& KernelDefBuilder::Device(const char* backend) {
   backend_ = std::string(backend);
   return *this;
@@ -637,6 +849,12 @@ KernelDefBuilder& KernelDefBuilder::RegisterCreate(KernelCreateFunc func) {
 
 KernelDefBuilder& KernelDefBuilder::RegisterCompute(KernelComputeFunc func) {
   compute_func_ = func;
+  return *this;
+}
+
+KernelDefBuilder& KernelDefBuilder::RegisterComputeAsync(
+    KernelComputeAsyncFunc func) {
+  compute_async_func_ = func;
   return *this;
 }
 
@@ -664,9 +882,15 @@ void Name::Build(const char* device_name, const char* backend) {
 
   StatusUniquePtr status(TF_NewStatus());
   {
-    auto builder =
-        TF_NewKernelBuilder(op_name_.c_str(), device_name, create_func_,
-                            compute_func_, delete_func_);
+    TF_KernelBuilder* builder = nullptr;
+    if (compute_func_) {
+      builder = TF_NewKernelBuilder(op_name_.c_str(), device_name, create_func_,
+                                    compute_func_, delete_func_);
+    } else {
+      builder =
+          TF_NewAsyncKernelBuilder(op_name_.c_str(), device_name, create_func_,
+                                   compute_async_func_, delete_func_);
+    }
     OpTypeFactory::RegisterOpType(create_func_, op_name_);
     auto check_type_constraint = [&builder, &status, this](DataType dtype,
                                                            const char* name) {
@@ -773,6 +997,18 @@ bool IsSyncExecEnabled() {
 
 namespace {
 
+// Label defaults to empty if not found in NodeDef.
+const string& GetKernelLabelAttr(const AttrSlice& node_attrs) {
+  static const string& kKernelAttr = *new string("_kernel");
+  static const string& kEmptyString = *new string("");
+
+  const AttrValue* attr_value = node_attrs.FindByString(kKernelAttr);
+  if (attr_value == nullptr || attr_value->value_case() != AttrValue::kS)
+    return kEmptyString;
+  else
+    return attr_value->s();
+}
+
 // TODO(itex): Replace with const Node& version below.
 Status FindKernelRegistration(
     const DeviceType& device_type, StringPiece node_name,
@@ -804,6 +1040,8 @@ Status FindKernelRegistration(
     bool match;
 
     if (kernel_def.device_type() != DeviceTypeString(device_type)) continue;
+    const string& label = GetKernelLabelAttr(node_attrs);
+    if (label != kernel_def.label()) continue;
 
     TF_RETURN_IF_ERROR(KernelAttrsMatch(kernel_def, node_attrs, &match));
     if (match) {
@@ -958,3 +1196,4 @@ const Eigen::GpuDevice& OpKernelContext::eigen_device() const {
 #endif  // INTEL_CPU_ONLY
 
 }  // namespace itex
+#endif  // ITEX_BUILD_JAX

@@ -1,7 +1,9 @@
+load("//itex:itex.bzl", "cc_library", "if_gpu_backend", "if_using_nextpluggable_device", "itex_xpu_binary", "itex_xpu_library")
 load(
     "//itex/core/utils:build_config.bzl",
     "tf_protobuf_deps",
 )
+load("@local_config_dpcpp//dpcpp:build_defs.bzl", "if_dpcpp")
 
 package(
     default_visibility = [
@@ -16,6 +18,36 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+filegroup(
+    name = "resource_hdrs",
+    srcs = [
+        "casts.h",
+        "errors.h",
+        "hash.h",
+        "intrusive_ptr.h",
+        "managed_stack_trace.h",
+        "mutex.h",
+        "mutex_data.h",
+        "numbers.h",
+        "platform_types.h",
+        "protobuf.h",
+        "refcount.h",
+        "resource_base.h",
+        "resource_handle.h",
+        "stack_frame.h",
+        "status.h",
+        "statusor.h",
+        "statusor_internals.h",
+        "str_util.h",
+        "strcat.h",
+        "tensor_coding.h",
+        "tensor_shape.h",
+        "thread_annotations.h",
+        "type_index.h",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "random",
     srcs = ["random.cc"],
@@ -26,16 +58,11 @@ cc_library(
 )
 
 cc_library(
-    name = "tf_buffer",
-    srcs = ["tf_buffer.cc"],
+    name = "ctstring",
     hdrs = [
-        "tf_buffer.h",
+        "ctstring.h",
+        "ctstring_internal.h",
     ],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//itex/core/utils:common_utils",
-        "@local_config_tf//:tf_header_lib",
-    ] + tf_protobuf_deps(),
 )
 
 cc_library(
@@ -49,29 +76,44 @@ cc_library(
         [
             "*.h",
         ],
+        exclude = [
+            "ctstring.h",
+            "ctstring_internal.h",
+        ],
     ),
     linkstatic = 1,
     deps = [
+        ":device_gpu_impl",
+        "//itex/core/graph:config_util_hdr",
         "//itex/core/utils/gtl:gtl_libs",
+        "//itex/core/utils/tensor_bundle:byteswaparray",
         "//third_party/eigen3",
-        "//itex/core/devices:xpu_device_util",
-        "@double_conversion//:double-conversion",
-        "@local_config_tf//:protos_all",
-        "@local_config_tf//:tf_header_lib",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/types:optional",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/synchronization",
-        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/types:optional",
+        "@com_googlesource_code_re2//:re2",
+        "@double_conversion//:double-conversion",
+        "@farmhash_archive//:farmhash",
+        "@local_config_tf//:protos_all",
+        "@local_config_tf//:tf_header_lib",
         "@nsync//:nsync_cpp",
-    ] + select({
-        "@local_config_dpcpp//dpcpp:using_dpcpp": [
-            "//itex/core/devices/gpu:eigen_stream_device",
-            "//itex/core/devices/gpu:gpu_device_impl",
-        ],
-        "//conditions:default": [],
-    }),
+    ] + if_using_nextpluggable_device([
+        "//third_party/build_option/dpcpp:itex_gpu_header",
+        ":libintel_xla",
+    ]),
+)
+
+cc_library(
+    name = "device_gpu_impl",
+    deps = if_dpcpp([
+        "//itex/core/devices/gpu:eigen_stream_device",
+        "//itex/core/devices/gpu:gpu_device_impl",
+    ]) + if_using_nextpluggable_device(
+        ["//itex/core/devices/next_pluggable_device:next_pluggable_device"],
+    ),
 )
 
 cc_library(
@@ -90,6 +132,7 @@ cc_library(
     name = "tstring",
     hdrs = [
         "tstring.h",
+        ":resource_hdrs",
     ],
     deps = [
         "@com_google_absl//absl/strings",
@@ -98,8 +141,23 @@ cc_library(
 )
 
 cc_library(
+    name = "device_types",
+    srcs = [
+        "device_types.cc",
+    ],
+    hdrs = [
+        "device_types.h",
+        "macros.h",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "types",
-    hdrs = ["types.h"],
+    hdrs = [
+        "device_types.h",
+        "types.h",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":platform",
@@ -110,7 +168,10 @@ cc_library(
 
 cc_library(
     name = "logging",
-    srcs = ["logging.cc"],
+    srcs = [
+        "env_time.cc",
+        "logging.cc",
+    ],
     hdrs = [
         "env_time.h",
         "integral_types.h",
@@ -129,6 +190,21 @@ cc_library(
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
+    ],
+)
+
+cc_library(
+    name = "cpu_info",
+    srcs = ["cpu_info.cc"],
+    hdrs = [
+        "cpu_info.h",
+        "integral_types.h",
+        "platform.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":logging",
+        "@com_google_absl//absl/base",
     ],
 )
 
@@ -173,7 +249,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":logging",
-        ":types",
     ],
 )
 
@@ -184,6 +259,7 @@ cc_library(
         "platform_types.h",
         "strcat.h",
     ],
+    copts = ["-DINTEL_COMMON"],
     visibility = ["//visibility:public"],
     deps = [
         ":logging",
@@ -235,6 +311,26 @@ cc_library(
 )
 
 cc_library(
+    name = "byte_order",
+    hdrs = ["byte_order.h"],
+)
+
+cc_library(
+    name = "errors",
+    srcs = ["errors.cc"],
+    hdrs = ["errors.h"],
+    deps = [
+        ":logging",
+        ":platform",
+        ":status",
+        ":str_util",
+        ":strcat",
+        ":types",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
     name = "status",
     srcs = ["status.cc"],
     hdrs = [
@@ -249,6 +345,23 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/types:optional",
+    ],
+)
+
+cc_library(
+    name = "statusor",
+    srcs = [
+        "statusor.cc",
+        "statusor_internals.h",
+    ],
+    hdrs = ["statusor.h"],
+    deps = [
+        ":errors",
+        ":logging",
+        ":status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -271,6 +384,7 @@ cc_library(
         "env_var.h",
         "errors.h",
     ],
+    copts = ["-DINTEL_COMMON"],
     visibility = ["//visibility:public"],
     deps = [
         ":logging",
@@ -286,15 +400,58 @@ cc_library(
     ],
 )
 
-cc_library(
+itex_xpu_library(
     name = "hw_info",
     srcs = ["hw_info.cc"],
-    hdrs = [
-        "hw_info.h",
-        "macros.h",
-    ],
+    hdrs = ["hw_info.h"],
     visibility = ["//visibility:public"],
     deps = [
-        "//third_party/build_option/dpcpp:dpcpp_header",
+        ":hw_info_hdr",
     ],
+)
+
+cc_library(
+    name = "hw_info_hdr",
+    srcs = ["hw_info.h"],
+    hdrs = ["macros.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/build_option/dpcpp:itex_gpu_header",
+    ],
+)
+
+cc_import(
+    name = "libintel_xla",
+    shared_library = ":intel_xla",
+    visibility = ["//visibility:public"],
+)
+
+itex_xpu_binary(
+    name = "libintel_xla.so",
+    linkshared = True,
+    set_target = "gpu_orig_backend",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@intel_xla//xla/pjrt:tf_pjrt_helper",
+        "@onednn_gpu",
+    ] + select({
+        "//third_party/onednn:build_with_onednn_graph": ["@onednn_gpu//:onednn_graph_gpu"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_library(
+    name = "parallel_openmp",
+    hdrs = [
+        "parallel_openmp.h",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "parallel",
+    hdrs = [
+        "parallel.h",
+    ],
+    visibility = ["//visibility:public"],
 )

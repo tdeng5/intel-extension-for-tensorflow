@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef ITEX_CORE_UTILS_ONEDNN_ONEDNN_UTIL_H_
 #define ITEX_CORE_UTILS_ONEDNN_ONEDNN_UTIL_H_
 
+#include <dlfcn.h>
+
 #include <map>
 #include <string>
 #include <utility>
@@ -28,14 +30,21 @@ limitations under the License.
 #endif                    // INTEL_CPU_ONLY
 
 #include "itex/core/utils/logging.h"
+#include "itex/core/utils/onednn/mkl_threadpool.h"
 #include "itex/core/utils/op_kernel.h"
 #include "itex/core/utils/op_requires.h"
 #include "itex/core/utils/status.h"
 #include "itex/core/utils/strcat.h"
 #include "itex/core/utils/tensor_format.h"
 #include "itex/core/utils/tensor_shape.h"
+#include "itex/core/wrapper/itex_cpu_wrapper.h"
 
 namespace itex {
+static std::once_flag read_env_once_flag;
+static bool enable_omp = true;
+typedef dnnl_status_t (*dnnl_stream_create_internal)(dnnl_stream_t*,
+                                                     dnnl_engine_t, void*);
+static dnnl_stream_create_internal make_stream;
 
 using GPUDevice = Eigen::GpuDevice;
 using CPUDevice = Eigen::ThreadPoolDevice;
@@ -47,8 +56,8 @@ const int MAX_NDIMS = DNNL_MAX_NDIMS;
 #endif
 
 #ifndef INTEL_CPU_ONLY
-static dnnl::engine& FindOrCreateEngine(DPCPPStream* stream) {
-  static std::map<DPCPPStream*, dnnl::engine> stream_engine_map;
+static dnnl::engine& FindOrCreateEngine(ITEX_GPUStream* stream) {
+  static std::map<ITEX_GPUStream*, dnnl::engine> stream_engine_map;
   auto iter = stream_engine_map.find(stream);
   if (iter != stream_engine_map.end()) return iter->second;
 
@@ -56,7 +65,7 @@ static dnnl::engine& FindOrCreateEngine(DPCPPStream* stream) {
   engine = dnnl::sycl_interop::make_engine(stream->get_device(),
                                            stream->get_context());
   return stream_engine_map
-      .insert(std::pair<DPCPPStream*, dnnl::engine>(stream, engine))
+      .insert(std::pair<ITEX_GPUStream*, dnnl::engine>(stream, engine))
       .first->second;
 }
 #endif
@@ -181,6 +190,11 @@ inline dnnl::memory::data_type OneDnnType<qint8>() {
 }
 
 template <>
+inline dnnl::memory::data_type OneDnnType<int8>() {
+  return dnnl::memory::data_type::s8;
+}
+
+template <>
 inline dnnl::memory::data_type OneDnnType<qint32>() {
   return dnnl::memory::data_type::s32;
 }
@@ -190,16 +204,23 @@ inline dnnl::memory::data_type OneDnnType<Eigen::bfloat16>() {
   return dnnl::memory::data_type::bf16;
 }
 
+#ifndef ITEX_BUILD_JAX
 template <typename Device>
 inline dnnl::engine& CreateDnnlEngine(const OpKernelContext& ctx);
 
 #ifndef INTEL_CPU_ONLY
 template <>
 inline dnnl::engine& CreateDnnlEngine<GPUDevice>(const OpKernelContext& ctx) {
-  auto* dpcpp_stream = ctx.GetDeviceStream();
-  return FindOrCreateEngine(dpcpp_stream);
+  auto* ITEX_GPU_stream = ctx.GetDeviceStream();
+  return FindOrCreateEngine(ITEX_GPU_stream);
 }
 #endif  // INTEL_CPU_ONLY
+
+// Helper function to get global CPU oneDNN engine.
+inline dnnl::engine& GetCPUDnnlEngine() {
+  static dnnl::engine cpu_engine = dnnl::engine(dnnl::engine::kind::cpu, 0);
+  return cpu_engine;
+}
 
 template <>
 inline dnnl::engine& CreateDnnlEngine<CPUDevice>(const OpKernelContext& ctx) {
@@ -208,25 +229,63 @@ inline dnnl::engine& CreateDnnlEngine<CPUDevice>(const OpKernelContext& ctx) {
   // TODO(itex): Check NUMA after integrating new CPU device.
   ITEX_CHECK(&(ctx.eigen_cpu_device()) == &(ctx.eigen_cpu_device_singleton()))
       << "Global oneDNN CPU engine mismatched with current context";
-  static dnnl::engine cpu_engine = dnnl::engine(dnnl::engine::kind::cpu, 0);
-  return cpu_engine;
+  return GetCPUDnnlEngine();
 }
 
 inline dnnl::stream CreateDnnlStream(const OpKernelContext& ctx,
-                                     const dnnl::engine& engine) {
+                                     const dnnl::engine& engine,
+                                     int num_thread = -1) {
 #ifndef INTEL_CPU_ONLY
-  if (engine.get_kind() == dnnl::engine::kind::gpu) {
-    auto* dpcpp_stream = ctx.GetDeviceStream();
-    return dnnl::sycl_interop::make_stream(engine, *dpcpp_stream);
-  }
-#endif  // INTEL_CPU_ONLY
+  // GPU
+  ITEX_CHECK(engine.get_kind() == dnnl::engine::kind::gpu)
+      << "Create oneDNN stream for unsupported engine.";
+  auto* ITEX_GPU_stream = ctx.GetDeviceStream();
+  return dnnl::sycl_interop::make_stream(engine, *ITEX_GPU_stream);
+#else
+#ifndef CC_BUILD
+  // CPU and python build
+  std::call_once(read_env_once_flag, []() {
+    ITEX_CHECK_OK(
+        itex::ReadBoolFromEnvVar("ITEX_OMP_THREADPOOL", true, &enable_omp));
+    if (!enable_omp) {
+      make_stream = reinterpret_cast<dnnl_stream_create_internal>(
+          dlsym(onednn_handle, "dnnl_threadpool_interop_stream_create"));
+    }
+  });
+  if (enable_omp) {
+    ITEX_CHECK(engine.get_kind() == dnnl::engine::kind::cpu)
+        << "Create oneDNN stream for unsupported engine.";
+    return dnnl::stream(engine);
+  } else {
+    if (num_thread == 1) return dnnl::stream(engine);
 
+    MklDnnThreadPool* eigen_tp = new MklDnnThreadPool(&ctx, num_thread);
+    dnnl_stream_t c_stream;
+    make_stream(&c_stream, engine.get(), eigen_tp);
+    dnnl::stream tp_stream = dnnl::stream(c_stream);
+    return tp_stream;
+  }
+#else
+// CPU and C++ BUILD
+#ifdef CC_THREADPOOL_BUILD
+  // CPU and C++ BUILD with eigen thread pool
+  if (num_thread == 1) return dnnl::stream(engine);
+  MklDnnThreadPool* eigen_tp = new MklDnnThreadPool(&ctx, num_thread);
+  dnnl::stream tp_stream =
+      dnnl::stream(dnnl::threadpool_interop::make_stream(engine, eigen_tp));
+  return tp_stream;
+#else
+  // CPU and C++ BUILD with OMP thread pool
   // Default path, always assume it's CPU engine.
   ITEX_CHECK(engine.get_kind() == dnnl::engine::kind::cpu)
       << "Create oneDNN stream for unsupported engine.";
   return dnnl::stream(engine);
+#endif  // CC_THREADPOOL_BUILD
+#endif  // CC_BUILD
+#endif  // INTEL_CPU_ONLY
 }
 
+#endif  // ITEX_BUILD_JAX
 inline dnnl::memory CreateDnnlMemory(const dnnl::memory::desc& md,
                                      const dnnl::engine& engine,
                                      void* data_handle = nullptr) {
@@ -275,7 +334,7 @@ inline dnnl::memory::format_tag OneDnnTensorFormatToTag(
 }
 
 /// Map TensorFlow data format into oneDNN data format. This is used in TF
-/// kernels which have `data_format` attributes, such as Conv/Batchnorm/...
+/// kernels which have `data_format` attributes, such as Conv/BatchNorm/...
 /// `TensorFormat` is original TF tensor attr, it's always NCHW or NHWC no
 /// matter the rank is 4D or 5D.
 ///
@@ -345,7 +404,7 @@ inline dnnl::memory::dims TFShapeToOneDnnDims(const TensorShape& shape) {
 ///
 /// Commonly used in below scenarios:
 /// 1) Create oneDNN primitive from TF tensor in kernel which has `data_format`
-///    attr, such as Conv/Batchnorm/Pooling;
+///    attr, such as Conv/BatchNorm/Pooling;
 /// 2) Reorder TF/oneDNN tensors to same oneDNN format in kernel which has
 ///    multiply inputs, such as AddN/Concat;
 ///
@@ -446,6 +505,7 @@ inline dnnl::memory::dims CalculateTFStrides(
   return strides;
 }
 
+#ifndef ITEX_BUILD_JAX
 template <typename T>
 inline void* GetTensorBuffer(const Tensor* tensor) {
   ITEX_CHECK_NOTNULL(tensor);
@@ -498,13 +558,18 @@ inline dnnl::memory::desc CreatePlainMemDescWithFormatTag(
                               dnnl::memory::format_tag::abcdefghijkl);
 }
 
+// Helper function to reorder oneDNN memory without `OpKernelContext`.
+void ReorderMemoryInternal(const dnnl::memory* src_memory,
+                           dnnl::memory* reorder_memory,
+                           dnnl::stream& onednn_stream);
+
 // Reorder src memory to expected memory
 void ReorderMemory(const OpKernelContext& context,
                    const dnnl::memory* src_memory, dnnl::memory* reorder_memory,
                    const dnnl::engine& onednn_engine);
 
-// Weight cache is used to avoid weight reorder repetitively when target weight
-// block md is different frome original weight plain md.
+// Weight cache is used to avoid weight reorder repetitively when target
+// weight block md is different frome original weight plain md.
 template <typename T>
 class WeightCacheManager {
  public:
@@ -532,7 +597,8 @@ class WeightCacheManager {
   PersistentTensor weight_cached_md_ TF_GUARDED_BY(mu_);
 };
 
-// Bias cache is used to avoid scale the bias tensor repetitively in INT8 kernel
+// Bias cache is used to avoid scale the bias tensor repetitively in INT8
+// kernel
 template <typename T>
 class BiasCacheManager {
  public:
@@ -545,7 +611,9 @@ class BiasCacheManager {
   // Only one thread can execute this method at any given time.
   void SetCache(OpKernelContext* context, const dnnl::memory::desc& bias_md,
                 const dnnl::primitive_attr& bias_attr, void* bias_data,
-                const dnnl::engine& onednn_engine) TF_LOCKS_EXCLUDED(mu_);
+                const dnnl::engine& onednn_engine,
+                const dnnl::memory& scales_mem = dnnl::memory())
+      TF_LOCKS_EXCLUDED(mu_);
 
   // Get the cached bias buffer
   T* GetCache(OpKernelContext* context) TF_LOCKS_EXCLUDED(mu_);
@@ -556,6 +624,7 @@ class BiasCacheManager {
   mutex mu_;
   PersistentTensor bias_cached_data_ TF_GUARDED_BY(mu_);
 };
+#endif
 
 template <typename Device>
 inline dnnl::fpmath_mode GetFP32MathMode() {

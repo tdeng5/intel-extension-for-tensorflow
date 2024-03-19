@@ -132,6 +132,10 @@ class ZerosLikeOp<Device, Variant> : public OpKernel {
                               TF_Tensor* tf_out) {
       OpKernelContext ctx(tf_ctx);
       Tensor out(tf_out);
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+      create_pjrt_buffer_to_tensor(tf_ctx, tf_out, out.shape(), out.dtype());
+#endif
       switch (out.dtype()) {
 #define DTYPE_CASE(dtype)                                           \
   case DataTypeToEnum<dtype>::value:                                \
@@ -139,6 +143,8 @@ class ZerosLikeOp<Device, Variant> : public OpKernel {
         out.template flat<dtype>().constant(dtype(0));              \
     break;
         TF_CALL_POD_TYPES(DTYPE_CASE)
+        default:
+          break;
 #undef DTYPE_CASE
       }
     };

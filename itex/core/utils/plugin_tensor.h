@@ -29,13 +29,30 @@ limitations under the License.
 #include "itex/core/utils/tf_buffer.h"
 #include "itex/core/utils/types.h"
 #include "protos/tensor.pb.h"
+#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+
+#ifndef ITEX_BUILD_JAX
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/c/tf_tensor.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "tensorflow/c/experimental/next_pluggable_device/c_api.h"
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 
 namespace itex {
 class TensorProto;
 class TensorBuffer;
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+constexpr uintptr_t kTag = 0x1ULL;
+
+void* tensor_get_raw_data(TF_Tensor* tf_tensor);
+bool pointer_is_pjrt_tensor(TF_Tensor* tf_tensor);
+void create_pjrt_buffer_to_tensor(TF_OpKernelContext* tf_ctx,
+                                  TF_Tensor* tf_tensor,
+                                  const TensorShape& shape, DataType dtype);
+
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 
 /// Interface to access the raw ref-counted data buffer.
 class TensorBuffer : public core::RefCounted {
@@ -80,9 +97,16 @@ class Tensor {
  public:
   explicit Tensor(TF_Tensor* buf);
 
-  Tensor() : buf_(nullptr) {}
+  Tensor() : Tensor(DT_FLOAT) {}
 
-  explicit Tensor(DataType type) : shape_(type), buf_(nullptr) {}
+  explicit Tensor(DataType type)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+      : shape_(type), buf_(nullptr), npdConfig_(ITEXNpdConfig::getNpdConfig()) {
+  }
+#else
+      : shape_(type), buf_(nullptr) {
+  }
+#endif
 
   // The Tensor buf_ will be allocated by `type` and `shape`.
   explicit Tensor(DataType type, const TensorShape& shape);
@@ -91,7 +115,16 @@ class Tensor {
 
   // TODO(itex): Combine Tensor(Tensor&) and Tensor(Tensor&&)
   // into a single function
-  Tensor(const Tensor& other) : shape_(other.shape_), buf_(nullptr) {
+  Tensor(const Tensor& other)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+      : shape_(other.shape_),
+        buf_(nullptr),
+        npdConfig_(ITEXNpdConfig::getNpdConfig())
+#else
+      : shape_(other.shape_),
+        buf_(nullptr)
+#endif
+  {
     TF_Status* tf_status = TF_NewStatus();
     const int64_t dims[1] = {1};
     buf_ = TF_AllocateTensor(static_cast<TF_DataType>(other.dtype()), dims, 1,
@@ -103,7 +136,16 @@ class Tensor {
     TF_DeleteStatus(tf_status);
   }
 
-  Tensor(Tensor&& other) : shape_(std::move(other.shape_)), buf_(nullptr) {
+  Tensor(Tensor&& other)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+      : shape_(std::move(other.shape_)),
+        buf_(nullptr),
+        npdConfig_(ITEXNpdConfig::getNpdConfig())
+#else
+      : shape_(std::move(other.shape_)),
+        buf_(nullptr)
+#endif
+  {
     const int64_t dims[1] = {1};
     buf_ = TF_AllocateTensor(static_cast<TF_DataType>(other.dtype()), dims, 1,
                              DataTypeSize(other.dtype()));
@@ -176,8 +218,8 @@ class Tensor {
   /// `AsProtoField()` fills in the repeated field for `proto.dtype()`, while
   /// `AsProtoTensorContent()` encodes the content in `proto.tensor_content()`
   /// in a compact form.
-  //  void AsProtoField(TensorProto* proto);
-  void AsProtoTensorContent(TensorProto* proto);
+  /// void AsProtoField(TensorProto* proto) const;
+  void AsProtoTensorContent(TensorProto* proto) const;
 
   DataType dtype() const { return shape_.data_type(); }
 
@@ -196,7 +238,16 @@ class Tensor {
   }
 
   bool IsInitialized() const {
+#ifndef USING_NEXTPLUGGABLE_DEVICE
     return buf_ != nullptr && TF_TensorData(buf_) != nullptr;
+#else
+    if (npdConfig_.IfEnableNextPluggableDevice()) {
+      return buf_ != nullptr && TF_TensorData(buf_) != nullptr &&
+             tensor_get_raw_data(buf_) != nullptr;
+    } else {
+      return buf_ != nullptr && TF_TensorData(buf_) != nullptr;
+    }
+#endif
   }
 
   size_t TotalBytes() const;
@@ -204,9 +255,15 @@ class Tensor {
   size_t AllocatedBytes() const;
 
   bool IsAligned() const {
+#ifndef USING_NEXTPLUGGABLE_DEVICE
     if (buf_ != nullptr) {
       return TF_TensorIsAligned(buf_);
     }
+#else
+    if (!npdConfig_.IfEnableNextPluggableDevice() && buf_ != nullptr) {
+      return TF_TensorIsAligned(buf_);
+    }
+#endif
     return true;
   }
 
@@ -466,7 +523,17 @@ class Tensor {
 
   template <typename T>
   T* base() const {
-    return reinterpret_cast<T*>(TF_TensorData(buf_));
+#ifndef USING_NEXTPLUGGABLE_DEVICE
+    return NumElements() ? reinterpret_cast<T*>(TF_TensorData(buf_)) : nullptr;
+#else
+    if (npdConfig_.IfEnableNextPluggableDevice()) {
+      return NumElements() ? reinterpret_cast<T*>(tensor_get_raw_data(buf_))
+                           : nullptr;
+    } else {
+      return NumElements() ? reinterpret_cast<T*>(TF_TensorData(buf_))
+                           : nullptr;
+    }
+#endif
   }
 
   inline void CopyFromInternal(const Tensor& other, const TensorShape& shape) {
@@ -487,8 +554,13 @@ class Tensor {
     set_dtype(dtype);
 
     TF_Status* tf_status = TF_NewStatus();
-    TF_TensorBitcastFrom(other.buf_, static_cast<TF_DataType>(dtype), buf_,
-                         shape.dim_sizes().data(), shape.dims(), tf_status);
+    if (other.buf_) {
+      TF_TensorBitcastFrom(other.buf_, static_cast<TF_DataType>(dtype), buf_,
+                           shape.dim_sizes().data(), shape.dims(), tf_status);
+    } else {
+      TF_DeleteTensor(buf_);
+      buf_ = nullptr;
+    }
     Status s = StatusFromTF_Status(tf_status);
     ITEX_CHECK_EQ(Status::OK(), s);
     TF_DeleteStatus(tf_status);
@@ -497,6 +569,9 @@ class Tensor {
  private:
   TensorShape shape_;
   TF_Tensor* buf_;
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  ITEXNpdConfig& npdConfig_;
+#endif
 };
 
 template <typename T, size_t NDIMS>
@@ -708,5 +783,5 @@ typename TTypes<T, NDIMS>::ConstTensor Tensor::flat_inner_outer_dims(
 Status MakeShape(const Tensor& shape_t, TensorShape* out);
 
 }  // namespace itex
-
+#endif  // ITEX_BUILD_JAX
 #endif  // ITEX_CORE_UTILS_PLUGIN_TENSOR_H_

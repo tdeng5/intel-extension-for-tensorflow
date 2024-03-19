@@ -23,6 +23,7 @@ limitations under the License.
 #include "itex/core/devices/xpu_device_util.h"
 #include "itex/core/kernels/common/fill_functor.h"
 #include "itex/core/kernels/common/fused_batch_norm_functor.h"
+#include "itex/core/kernels/common/host_data_cache.h"
 #include "itex/core/utils/errors.h"
 #include "itex/core/utils/onednn/onednn_util.h"
 #include "itex/core/utils/op_kernel.h"
@@ -34,7 +35,6 @@ limitations under the License.
 #include "itex/core/utils/tensor_types.h"
 #include "itex/core/utils/types.h"
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-
 namespace itex {
 
 // "is_batch_norm_ex" template argument is not used in kernel actually, since
@@ -78,6 +78,10 @@ class FusedBatchNormOp : public OpKernel {
       if (activation_mode == FbnActivationMode::kRelu) {
         is_batch_norm_ex_ = true;
       }
+    }
+    is_inplace_ = false;
+    if (context->HasAttr("is_inplace")) {
+      OP_REQUIRES_OK(context, context->GetAttr("is_inplace", &is_inplace_));
     }
   }
   // If use_reserved_space is true, we need to handle the 5th output (a reserved
@@ -143,8 +147,13 @@ class FusedBatchNormOp : public OpKernel {
 
         return;
       } else {
-        OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
-                                    {0}, 0, src_tensor.shape(), &dst_tensor));
+        if (is_inplace_ && !std::is_same<T, qint8>::value) {
+          context->set_output(0, src_tensor);
+          dst_tensor = context->mutable_output(0);
+        } else {
+          OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
+                                      {0}, 0, src_tensor.shape(), &dst_tensor));
+        }
       }
 
       size_t depth =
@@ -169,7 +178,7 @@ class FusedBatchNormOp : public OpKernel {
                              dnnl::memory::format_tag::a);
       auto propagation = (is_training_ || is_batch_norm_ex_)
                              ? dnnl::prop_kind::forward_training
-                             : dnnl::prop_kind::forward_scoring;
+                             : dnnl::prop_kind::forward_inference;
       auto flag = dnnl::normalization_flags::use_scale |
                   dnnl::normalization_flags::use_shift;
       if (!is_training_) {
@@ -182,13 +191,11 @@ class FusedBatchNormOp : public OpKernel {
           flag |= dnnl::normalization_flags::fuse_norm_relu;
         }
       }
-      dnnl::batch_normalization_forward::desc bn_fwd_desc(propagation, src_md,
-                                                          epsilon_, flag);
 
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       dnnl::batch_normalization_forward::primitive_desc bn_fwd_pd(
-          bn_fwd_desc, attr, onednn_engine);
+          onednn_engine, propagation, src_md, src_md, epsilon_, flag, attr);
 
       Tensor scratchpad_tensor;
       int64 scratchpad_size =
@@ -206,7 +213,11 @@ class FusedBatchNormOp : public OpKernel {
       if (is_batch_norm_ex_) {
         dnnl::memory::desc workspace_md = bn_fwd_pd.workspace_desc();
         size_t workspace_bytes = workspace_md.get_size();
-        workspace_tf_shape.AddDim(workspace_bytes / sizeof(U));
+        // Notice we need use ceiling here, since the required bytes may not
+        // divisible by 4
+        int num_elem = std::ceil(static_cast<float>(workspace_bytes) /
+                                 static_cast<float>(sizeof(U)));
+        workspace_tf_shape.AddDim(num_elem);
 
         AllocateTFOutputs(context, scale_tensor.shape(), workspace_tf_shape,
                           &batch_mean_tensor, &batch_variance_tensor,
@@ -326,12 +337,12 @@ class FusedBatchNormOp : public OpKernel {
       auto est_variance_data = est_variance_tensor.flat<U>().data();
 
 #ifndef INTEL_CPU_ONLY
-      auto* dpcpp_stream = context->GetDeviceStream();
+      auto* gpu_stream = context->GetDeviceStream();
       auto total_threads =
-          dpcpp_stream->get_device()
+          gpu_stream->get_device()
               .template get_info<sycl::info::device::max_work_group_size>();
       if (exponential_avg_factor_ == U(1.0)) {
-        dpcpp_stream->submit([&](sycl::handler& cgh) {
+        gpu_stream->submit([&](sycl::handler& cgh) {
           auto batch_mean_data_ptr = static_cast<U*>(batch_mean_data);
           auto mean_data_ptr = static_cast<U*>(mean_data);
           auto batch_variance_data_ptr = static_cast<U*>(batch_variance_data);
@@ -352,7 +363,7 @@ class FusedBatchNormOp : public OpKernel {
       } else {
         U one_minus_factor = U(1.0) - exponential_avg_factor_;
         U exponential_avg_factor = exponential_avg_factor_;
-        dpcpp_stream->submit([&](sycl::handler& cgh) {
+        gpu_stream->submit([&](sycl::handler& cgh) {
           auto batch_mean_data_ptr = batch_mean_data;
           auto est_mean_data_ptr = est_mean_data;
           auto mean_data_ptr = mean_data;
@@ -420,6 +431,7 @@ class FusedBatchNormOp : public OpKernel {
   }
 
  private:
+  bool is_inplace_;
   float epsilon_;
   U exponential_avg_factor_;
   TensorFormat tensor_format_;
@@ -511,7 +523,7 @@ class QuantizedFusedBatchNormOp
         context);
     if (out_dt_ == DT_QINT8) {
       // TODO(itex): here code may has some bugs. but we just follow Intel-TF
-      // implementation. It assumes the min/max of input & output of Batchnorm
+      // implementation. It assumes the min/max of input & output of BatchNorm
       // are the same. In reality, the assumption is not always true, but
       // currently, we don't receive model accuracy issue report.
       context->set_output(1, context->input(5));
@@ -538,17 +550,17 @@ class QuantizedFusedBatchNormOp
     const void* min_device_data = context->input(5).data();
     const void* max_device_data = context->input(6).data();
 
-    auto* dpcpp_stream = context->GetDeviceStream();
+    auto* gpu_stream = context->GetDeviceStream();
     DeviceMemcpy<Device>(min_host_data, min_device_data, 1 * sizeof(float),
-                         dpcpp_stream);
+                         gpu_stream);
     DeviceMemcpy<Device>(max_host_data, max_device_data, 1 * sizeof(float),
-                         dpcpp_stream);
+                         gpu_stream);
 #endif  // INTEL_CPU_ONLY
 
     const float max_abs = std::max(std::abs(min), std::abs(max));
-    const float scale = 127.0f / max_abs;
+    float scale = 127.0f / max_abs;
     dnnl::primitive_attr scale_attr;
-    scale_attr.set_output_scales(0, {scale});
+    scale_attr.set_scales_mask(DNNL_ARG_SRC, 0);
     auto input_md =
         dnnl::memory::desc({tensor_in.NumElements()}, OneDnnType<U>(),
                            dnnl::memory::format_tag::x);
@@ -556,10 +568,18 @@ class QuantizedFusedBatchNormOp
         dnnl::memory(input_md, engine, GetTensorBuffer<U>(&tensor_in));
     dnnl::memory scaled_input_mem =
         dnnl::memory(input_md, engine, GetTensorBuffer<U>(tensor_out));
+    float* output_scale_ptr =
+        output_scale_cache_.GetCachedPtr(context, &scale, 1);
+    dnnl::memory scale_mem(
+        {{1}, dnnl::memory::data_type::f32, dnnl::memory::format_tag::x},
+        engine, output_scale_ptr);
     dnnl::reorder reorder_pd =
         dnnl::reorder(input_mem, scaled_input_mem, scale_attr);
     std::unordered_map<int, dnnl::memory> reorder_args = {
-        {DNNL_ARG_SRC, input_mem}, {DNNL_ARG_DST, scaled_input_mem}};
+        {DNNL_ARG_SRC, input_mem},
+        {DNNL_ARG_DST, scaled_input_mem},
+        {DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, scale_mem},
+    };
     reorder_pd.execute(stream, reorder_args);
   }
 
@@ -577,6 +597,7 @@ class QuantizedFusedBatchNormOp
 
  protected:
   DataType out_dt_;
+  HostDataCache<Device, float> output_scale_cache_;
 };
 
 template <typename Device, typename T, typename U, bool reserved_space,
@@ -722,7 +743,6 @@ class FusedBatchNormGradOp : public OpKernel {
       auto shift_md =
           dnnl::memory::desc({static_cast<int64_t>(depth)}, OneDnnType<U>(),
                              dnnl::memory::format_tag::a);
-
       auto propagation_fwd = dnnl::prop_kind::forward_training;
       auto propagation_bwd = dnnl::prop_kind::backward;
 
@@ -739,18 +759,14 @@ class FusedBatchNormGradOp : public OpKernel {
         }
       }
 
-      dnnl::batch_normalization_forward::desc bn_fwd_desc(
-          propagation_fwd, src_md, epsilon_, flag);
-      dnnl::batch_normalization_backward::desc bn_bwd_desc(
-          propagation_bwd, diff_dst_md, src_md, epsilon_, flag);
-
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
 
       dnnl::batch_normalization_forward::primitive_desc bn_fwd_pd(
-          bn_fwd_desc, attr, onednn_engine);
+          onednn_engine, propagation_fwd, src_md, src_md, epsilon_, flag, attr);
       dnnl::batch_normalization_backward::primitive_desc bn_bwd_pd(
-          bn_bwd_desc, attr, onednn_engine, bn_fwd_pd);
+          onednn_engine, propagation_bwd, diff_dst_md, diff_dst_md, src_md,
+          epsilon_, flag, bn_fwd_pd, attr);
 
       Tensor scratchpad_tensor;
       int64 scratchpad_size =
@@ -764,19 +780,11 @@ class FusedBatchNormGradOp : public OpKernel {
                        GetTensorBuffer<T>(&scratchpad_tensor));
 
       dnnl::batch_normalization_backward bn_bwd_primitive(bn_bwd_pd);
-
-      // OneDnn requests an empty shift tensor.
-      Tensor shift_tensor;
-      OP_REQUIRES_OK(
-          context, context->allocate_temp(DataTypeToEnum<U>::v(),
-                                          scale_tensor.shape(), &shift_tensor));
-
       void* src_data = GetTensorBuffer<T>(&src_tensor);
       void* diff_dst_data = GetTensorBuffer<T>(&diff_dst_tensor);
       void* mean_data = GetTensorBuffer<U>(&saved_mean_tensor);
       void* variance_data = GetTensorBuffer<U>(&saved_variance_tensor);
       void* scale_data = GetTensorBuffer<U>(&scale_tensor);
-      void* shift_data = GetTensorBuffer<U>(&shift_tensor);
       void* diff_src_data = GetTensorBuffer<T>(diff_src_tensor);
       void* diff_src1_data = nullptr;
       if (has_side_input_) {
@@ -791,7 +799,6 @@ class FusedBatchNormGradOp : public OpKernel {
       auto src_mem =
           CreateDnnlMemory(bn_bwd_pd.src_desc(), onednn_engine, src_data);
       auto scale_mem = CreateDnnlMemory(scale_md, onednn_engine, scale_data);
-      auto shift_mem = CreateDnnlMemory(shift_md, onednn_engine, shift_data);
       auto mean_mem =
           CreateDnnlMemory(bn_bwd_pd.mean_desc(), onednn_engine, mean_data);
       auto variance_mem = CreateDnnlMemory(bn_bwd_pd.variance_desc(),
@@ -821,7 +828,6 @@ class FusedBatchNormGradOp : public OpKernel {
           {DNNL_ARG_DIFF_SRC, diff_src_mem},
           {DNNL_ARG_SCRATCHPAD, scratchpad_mem},
           {DNNL_ARG_SCALE, scale_mem},
-          {DNNL_ARG_SHIFT, shift_mem},
           {DNNL_ARG_DIFF_SCALE, diff_scale_mem},
           {DNNL_ARG_DIFF_SHIFT, diff_shift_mem}};
 

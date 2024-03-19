@@ -15,9 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifndef ITEX_BUILD_JAX
 #include "itex/core/utils/plugin_tensor.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "itex/core/utils/gtl/inlined_vector.h"
 #include "itex/core/utils/numeric_types.h"
@@ -25,6 +27,9 @@ limitations under the License.
 #include "itex/core/utils/tensor_coding.h"
 #include "itex/core/utils/tensor_shape.h"
 #include "itex/core/utils/type_traits.h"
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif
 
 namespace itex {
 namespace {
@@ -113,6 +118,69 @@ struct Helper<tstring> {
 
 }  // namespace
 
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+void* tensor_get_raw_data(TF_Tensor* tf_tensor) {
+  void* data_ptr = TF_TensorData(tf_tensor);
+  if (data_ptr == nullptr) return nullptr;
+  uintptr_t value = reinterpret_cast<uintptr_t>(data_ptr);
+
+  if (value & kTag) {
+    TF_Status* tf_status = TF_NewStatus();
+    PJRT_Buffer* pjrt_c_buffer = TF_GetPjRtCBuffer(tf_tensor, tf_status);
+    return ITEXOpaqueDataPointerFromPjRtBuffer(pjrt_c_buffer);
+  } else {
+    return data_ptr;
+  }
+}
+
+bool pointer_is_pjrt_tensor(TF_Tensor* tf_tensor) {
+  uintptr_t value = reinterpret_cast<uintptr_t>(TF_TensorData(tf_tensor));
+  if (value & kTag) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+void create_pjrt_buffer_to_tensor(TF_OpKernelContext* tf_ctx,
+                                  TF_Tensor* tf_tensor,
+                                  const TensorShape& shape, DataType dtype) {
+  if (pointer_is_pjrt_tensor(tf_tensor)) {
+    TF_Status* tf_status = TF_NewStatus();
+    PJRT_Buffer* pjrt_c_buffer = TF_GetPjRtCBuffer(tf_tensor, tf_status);
+    if (pjrt_c_buffer == nullptr) {
+      int device_id = TF_GetDeviceId(tf_ctx);
+      PJRT_Client* pjrt_c_client = TF_GetPjRtCClient(DEVICE_XPU, tf_status);
+
+      int rank = shape.dims();
+      std::vector<int64_t> dimensions(rank);
+      for (int d = 0; d < rank; ++d) {
+        dimensions[d] = shape.dim_size(d);
+      }
+      size_t size = shape.num_elements() * DataTypeSize(dtype);
+
+      ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+      if (npdConfig.isXlaAutoJitEnabled()) {
+        std::vector<int64_t> layout(rank);
+        std::iota(layout.rbegin(), layout.rend(), 0);
+        TF_CreatePjRtBuffer(
+            tf_tensor,
+            ITEXCreateSEPjRtBuffer(device_id, DataTypeString(dtype), dimensions,
+                                   layout, pjrt_c_client),
+            "XPU", tf_status);
+      } else {
+        TF_CreatePjRtBuffer(
+            tf_tensor,
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(dtype), &dimensions,
+                                 size, pjrt_c_client),
+            "XPU", tf_status);
+      }
+      TF_DeleteStatus(tf_status);
+    }
+  }
+}
+#endif  // USING_NEXTPLUGGABLE_DEVICE
+
 void Tensor::CheckTypeAndIsAligned(DataType expected_dtype) const {
   ITEX_CHECK_EQ(dtype(), expected_dtype)
       << " " << DataTypeString(expected_dtype) << " expected, got "
@@ -138,7 +206,11 @@ size_t Tensor::TotalBytes() const {
 size_t Tensor::AllocatedBytes() const { return TotalBytes(); }
 
 Tensor::Tensor(DataType type, const TensorShape& shape, TF_Tensor* buf)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+    : shape_(shape), buf_(buf), npdConfig_(ITEXNpdConfig::getNpdConfig()) {
+#else
     : shape_(shape), buf_(buf) {
+#endif
   shape_.set_data_type(type);
   if (!buf_) {
     ITEX_LOG(ERROR)
@@ -146,7 +218,12 @@ Tensor::Tensor(DataType type, const TensorShape& shape, TF_Tensor* buf)
   }
 }
 
-Tensor::Tensor(TF_Tensor* buf) {
+Tensor::Tensor(TF_Tensor* buf)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+    : npdConfig_(ITEXNpdConfig::getNpdConfig()) {
+#else
+{
+#endif
   buf_ = buf;
   TensorShape shape;
   int num_dim = TF_NumDims(buf_);
@@ -158,7 +235,11 @@ Tensor::Tensor(TF_Tensor* buf) {
 }
 
 Tensor::Tensor(DataType type, const TensorShape& shape)
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+    : shape_(shape), buf_(nullptr), npdConfig_(ITEXNpdConfig::getNpdConfig()) {
+#else
     : shape_(shape), buf_(nullptr) {
+#endif
   shape_.set_data_type(type);
 
   gtl::InlinedVector<int64, 4> dims(shape_.dims(), 0);
@@ -327,14 +408,25 @@ bool Tensor::FromProto(const TensorProto& proto) {
   CASES_WITH_DEFAULT(TYPE_ENUM, STMTS, ITEX_LOG(FATAL) << "Type not set"; \
                      , ITEX_LOG(FATAL) << "Unexpected type: " << TYPE_ENUM;)
 
-void Tensor::AsProtoTensorContent(TensorProto* proto) {
+void Tensor::AsProtoTensorContent(TensorProto* proto) const {
   proto->Clear();
   proto->set_dtype(dtype());
   shape_.AsProto(proto->mutable_tensor_shape());
   if (buf_) {
     TensorBuffer* tmp_buf_ = nullptr;
+#ifndef USING_NEXTPLUGGABLE_DEVICE
     tmp_buf_ =
         new itex::TensorBuffer(reinterpret_cast<void*>(TF_TensorData(buf_)));
+#else
+    ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+    if (npdConfig.IfEnableNextPluggableDevice()) {
+      tmp_buf_ = new itex::TensorBuffer(
+          reinterpret_cast<void*>(tensor_get_raw_data(buf_)));
+    } else {
+      tmp_buf_ =
+          new itex::TensorBuffer(reinterpret_cast<void*>(TF_TensorData(buf_)));
+    }
+#endif
     CASES(dtype(), Helper<T>::Encode(tmp_buf_, shape_.num_elements(),
                                      proto->mutable_tensor_content()));
     tmp_buf_->Unref();
@@ -581,3 +673,4 @@ string Tensor::SummarizeValue(int64 max_entries, bool print_v2) const {
   }
 }
 }  // namespace itex
+#endif  // ITEX_BUILD_JAX

@@ -1,24 +1,45 @@
 # Frequently Asked Questions
 
-I. How to check whether GPU drivers are installed successfully?
+1. **How do I check that GPU drivers are installed successfully?**
 
-Run `import tensorflow` and it will show which platform you are running on: Intel(R) Level-Zero(default) or Intel(R) OpenCL.
+    Run `import tensorflow` and it will show which platform you are running on: Intel® oneAPI Level-Zero (default) or OpenCL™.
 
-And the high level API of TensorFlow `tf.config.experimental.list_physical_devices()` will tell you the device types that are registered to TensorFlow core.
+    The high level API of TensorFlow `tf.config.experimental.list_physical_devices()` will tell you the device types that are registered to TensorFlow core.
 
-```
-$ python
->>> import tensorflow as tf
-2021-07-01 06:40:55.510076: I itex/core/devices/gpu/dpcpp_runtime.cc:116] Selected platform: Intel(R) Level-Zero.
->>> tf.config.experimental.list_physical_devices()
-[PhysicalDevice(name='/physical_device:CPU:0', device_type='CPU'), PhysicalDevice(name='/physical_device:XPU:0', device_type='XPU')]
-```
+    ```
+    $ python
+    >>> import tensorflow as tf
+    2021-07-01 06:40:55.510076: I itex/core/devices/gpu/dpcpp_runtime.cc:116] Selected platform: Intel(R) Level-Zero.
+    >>> tf.config.experimental.list_physical_devices()
+    [PhysicalDevice(name='/physical_device:CPU:0', device_type='CPU'), PhysicalDevice(name='/physical_device:XPU:0', device_type='XPU')]
+    ```
 
-   
-II. How to know the configurations and rate of utilization of local GPU devices?
+2. **How can I see the configurations and rate of utilization of local GPU devices?**
 
-[System Monitoring Utility](https://github.com/intel/pti-gpu/tree/master/tools/sysmon) tool can be used to show the capability (clock frequency, EU count, amount of device memory and so on) of your devices and usage of each sub-module (device memory, GPU engines and so on).
+    Use the [System Monitoring Utility](https://github.com/intel/pti-gpu/tree/master/tools/sysmon) tool to show the capability (clock frequency, EU count, amount of device memory, and so on) of your devices and usage of each sub-module (device memory, GPU engines, and so on).
 
+
+3. **What's the relationship of TensorFlow\*, Intel® Optimization of TensorFlow\* and Intel® Extension for TensorFlow\*?**
+
+    - **TensorFlow** is an open-source machine learning library developed and maintained by Google. It is widely used for building and training machine learning models, particularly neural networks.<p/>
+
+    - **Intel® Optimization of TensorFlow** is an optimized library to run TensorFlow on Intel CPUs and replaces stock TensorFlow\* for Intel CPUs. Since the TensorFlow 2.9 release, all Intel optimizations for Intel CPUs are upstreamed and available in stock TensorFlow. That means you only need to install stock TensorFlow. **DO NOT** install both at the same time, the impact is unknown.
+
+      Starting in Q1 2024, the separate Intel® Optimization for TensorFlow* will be discontinued. Intel optimization will be available directly from continuing upstreamed contributions to stock TensorFlow*.
+
+    - **Intel® Extension for TensorFlow** is an extension of stock TensorFlow* and helps extend acceleration on Intel CPUs and supported Intel GPUs.
+      Intel® Extension for TensorFlow* co-works with stock TensorFlow* (that
+      includes upstreamed optimizations from Intel).
+
+      Currently, Intel® Extension for TensorFlow* has two releases: CPU & XPU.
+
+      - For Intel CPUs, Intel® Extension for TensorFlow* for CPU + stock TensorFlow\* provides the best performance of TensorFlow\* on Intel CPUs. Install command: `pip install --upgrade intel-extension-for-tensorflow[cpu]`.
+
+      - For Intel GPUs, Intel® Extension for TensorFlow* for XPU + stock TensorFlow\* provides the best performance of TensorFlow* on Intel GPUs. Install command: `pip install --upgrade intel-extension-for-tensorflow[xpu]`.
+
+4. **How can I install ARC GPU on my laptop?**
+
+   For driver installation, please refer to [install_for_xpu](https://github.com/intel/intel-extension-for-tensorflow/blob/main/docs/install/install_for_xpu.md) . Here is an example for [install ARC 730M on intel X15 laptop](https://github.com/intel/intel-extension-for-tensorflow/issues/54)
 
 
 ## Troubleshooting
@@ -37,9 +58,11 @@ This section shows common problems and solutions for compilation and runtime iss
 
 ### Runtime
 
-| Error                                                        | Solution                                                     | Comments                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------- |
-| ModuleNotFoundError: No module named 'tensorflow'            | install TensorFlow                                           | ITEX depends on TensorFlow                                |
-| tensorflow.python.framework.errors_impl.NotFoundError: libmkl_sycl.so.2: cannot open shared object file: No such file or directory | `source /opt/intel/oneapi/setvars.sh`                        | set env vars of oneAPI Base Toolkit                       |
-| INTEL MKL ERROR: /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_avx512.so.2: undefined symbol: mkl_sparse_optimize_bsr_trsm_i8.<br/>Intel MKL FATAL ERROR: Cannot load libmkl_avx512.so.2 or libmkl_def.so.2. | `export LD_PRELOAD=/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_core.so:/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_tbb_thread.so` | It's a known issue and will be fixed in the next release. |
+| Error                                                        | Solution                              | Comments                            |
+| ------------------------------------------------------------ | ------------------------------------- | ----------------------------------- |
+| ModuleNotFoundError: No module named 'tensorflow'            | install TensorFlow                    | Intel® Extension for TensorFlow* depends on TensorFlow          |
+| tensorflow.python.framework.errors_impl.NotFoundError: libmkl_sycl.so.2: cannot open shared object file: No such file or directory | `source /opt/intel/oneapi/setvars.sh` | set env vars of oneAPI Base Toolkit |
+| version GLIBCXX_3.4.30' not found | `conda install -c conda-forge gxx_linux-64==12.1.0` | install higher version glibcxx |  
+
+
 

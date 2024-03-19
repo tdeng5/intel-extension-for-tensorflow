@@ -67,6 +67,10 @@ class InstanceNormOp : public OpKernel {
                                   "only support Relu and LeakyRelu"));
       }
     }
+    is_inplace_ = false;
+    if (context->HasAttr("is_inplace")) {
+      OP_REQUIRES_OK(context, context->GetAttr("is_inplace", &is_inplace_));
+    }
   }
 
   void Compute(OpKernelContext* context) override {
@@ -103,8 +107,13 @@ class InstanceNormOp : public OpKernel {
         ITEX_DCHECK(dst_tensor);
         return;
       } else {
-        OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
-                                    {0}, 0, src_tensor.shape(), &dst_tensor));
+        if (is_inplace_) {
+          context->set_output(0, src_tensor);
+          dst_tensor = context->mutable_output(0);
+        } else {
+          OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
+                                      {0}, 0, src_tensor.shape(), &dst_tensor));
+        }
       }
 
       int num_elements_scale = scale_tensor.dim_size(0);
@@ -149,24 +158,18 @@ class InstanceNormOp : public OpKernel {
       auto flags = dnnl::normalization_flags::use_scale |
                    dnnl::normalization_flags::use_shift;
 
-      dnnl::batch_normalization_forward::desc bn_fwd_desc(propagation, src_md,
-                                                          epsilon_, flags);
-
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
       dnnl::batch_normalization_forward::primitive_desc bn_fwd_pd;
 
       if (fuse_activation) {
         dnnl::post_ops post_ops;
-        post_ops.append_eltwise(1.0, dnnl::algorithm::eltwise_relu,
-                                leakyrelu_alpha_, 0.0);
+        post_ops.append_eltwise(dnnl::algorithm::eltwise_relu, leakyrelu_alpha_,
+                                0.0);
         attr.set_post_ops(post_ops);
-        bn_fwd_pd = dnnl::batch_normalization_forward::primitive_desc(
-            bn_fwd_desc, attr, onednn_engine);
-      } else {
-        bn_fwd_pd = dnnl::batch_normalization_forward::primitive_desc(
-            bn_fwd_desc, attr, onednn_engine);
       }
+      bn_fwd_pd = dnnl::batch_normalization_forward::primitive_desc(
+          onednn_engine, propagation, src_md, src_md, epsilon_, flags, attr);
 
       dnnl::batch_normalization_forward bn_fwd_primitive(bn_fwd_pd);
 
@@ -223,6 +226,7 @@ class InstanceNormOp : public OpKernel {
   }
 
  private:
+  bool is_inplace_;
   float epsilon_;
   float leakyrelu_alpha_;
   TensorFormat tensor_format_;

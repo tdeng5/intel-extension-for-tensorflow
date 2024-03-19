@@ -71,10 +71,9 @@ class OneDnnSoftmaxOp : public OpKernel {
       // Create softmax primitive
       dnnl::primitive_attr attr;
       attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
-      auto fwd_desc =
-          softmax_forward::desc(prop_kind::forward_training, src_md, axis);
-      auto fwd_pd =
-          softmax_forward::primitive_desc(fwd_desc, attr, onednn_engine);
+      auto fwd_pd = softmax_forward::primitive_desc(
+          onednn_engine, prop_kind::forward_training,
+          dnnl::algorithm::softmax_accurate, src_md, src_md, axis, attr);
       auto fwd_primitive = softmax_forward(fwd_pd);
 
       // Create src memory

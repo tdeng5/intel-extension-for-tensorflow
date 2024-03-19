@@ -51,12 +51,15 @@ template <typename T, typename TIndex>
 Status InputCumSum<T, TIndex>::Compute(
     OpKernelContext* context, typename TTypes<T>::ConstFlat input,
     typename TTypes<TIndex>::Vec input_cumsum, TIndex num_elems) {
-  launchFullScan<const T, TIndex, TIndex, sycl::plus<TIndex>,
-                 NonZero<T, TIndex>>(context, input.data(), input_cumsum.data(),
-                                     TIndex(0), sycl::plus<TIndex>(), false,
-                                     false, num_elems, NonZero<T, TIndex>());
+  TF_RETURN_IF_ERROR(launchFullScan<const T, TIndex, TIndex, sycl::plus<TIndex>,
+                                    NonZero<T, TIndex>>(
+      context, input.data(), input_cumsum.data(), TIndex(0),
+      sycl::plus<TIndex>(), false, false, num_elems, NonZero<T, TIndex>()));
   return Status::OK();
 }
+
+// Explicit instantiation for SparseSliceOp.
+template struct InputCumSum<int, int64_t>;
 
 template <int NDIM, typename T, typename TIndex>
 struct WhereKernel {
@@ -182,7 +185,6 @@ class WhereOp : public OpKernel {
                    context->allocate_output(
                        0, TensorShape({num_true_host, input_dims}), &output));
 
-    // Currently Where<GPUDevice>::Compute() does not compute found_true
 #define HANDLE_DIM(NDIM)                                            \
   case NDIM: {                                                      \
     Status s = functor::Where<GPUDevice, NDIM, T, Tindex>::Compute( \
@@ -218,9 +220,9 @@ TF_CALL_int8(REGISTER_WHERE_OP);
 TF_CALL_uint8(REGISTER_WHERE_OP);
 TF_CALL_int32(REGISTER_WHERE_OP);
 TF_CALL_int64(REGISTER_WHERE_OP);
-TF_CALL_complex64(REGISTER_WHERE_OP);
 #ifdef ITEX_ENABLE_DOUBLE
 TF_CALL_double(REGISTER_WHERE_OP);
+TF_CALL_complex64(REGISTER_WHERE_OP);
 TF_CALL_complex128(REGISTER_WHERE_OP);
 #endif
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_WHERE_OP);

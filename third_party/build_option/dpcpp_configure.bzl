@@ -4,12 +4,15 @@
 
   * HOST_CXX_COMPILER:  The host C++ compiler
   * HOST_C_COMPILER:    The host C compiler
+  * GCC_HOST_COMPILER:  The host GCC compiler
   * PYTHON_LIB_PATH: The path to the python lib
 """
 
 _HOST_CXX_COMPILER = "HOST_CXX_COMPILER"
 
 _HOST_C_COMPILER = "HOST_C_COMPILER"
+
+_GCC_HOST_COMPILER = "GCC_HOST_COMPILER"
 
 _DPCPP_TOOLKIT_PATH = "DPCPP_TOOLKIT_PATH"
 
@@ -50,9 +53,29 @@ def auto_configure_fail(msg):
     no_color = "\033[0m"
     fail("\n%sAuto-Configuration Error:%s %s\n" % (red, no_color, msg))
 
+def find_gcc(repository_ctx):
+    """Find host GCC compiler."""
+    gcc_name = "gcc"
+    gcc_found = None
+    if _GCC_HOST_COMPILER in repository_ctx.os.environ:
+        gcc_found = repository_ctx.os.environ[_GCC_HOST_COMPILER].strip()
+    else:
+        gcc_found = repository_ctx.which(gcc_name)
+    if gcc_found == None:
+        fail("Cannot find GCC compiler, please correct your path.")
+    if str(gcc_found).startswith("/"):
+        gcc_path = repository_ctx.path(gcc_found)
+    else:
+        gcc_path = repository_ctx.which(gcc_found)
+    if not gcc_path or not gcc_path.exists:
+        fail("Cannot find GCC compiler, please correct your path.")
+    gcc_name = gcc_path.basename
+    gcc_path_prefix = gcc_path.dirname
+    return gcc_name, gcc_path, gcc_path_prefix
+
 def find_c(repository_ctx):
     """Find host C compiler."""
-    c_name = "gcc"
+    c_name, _, _ = find_gcc(repository_ctx)
     if _HOST_C_COMPILER in repository_ctx.os.environ:
         c_name = repository_ctx.os.environ[_HOST_C_COMPILER].strip()
     if c_name.startswith("/"):
@@ -78,10 +101,33 @@ def find_dpcpp_root(repository_ctx):
     """Find DPC++ compiler."""
     sycl_name = ""
     if _DPCPP_TOOLKIT_PATH in repository_ctx.os.environ:
-        sycl_name = repository_ctx.os.environ[_DPCPP_TOOLKIT_PATH].strip()
+        sycl_name = str(repository_ctx.path(repository_ctx.os.environ[_DPCPP_TOOLKIT_PATH].strip()).realpath)
     if sycl_name.startswith("/"):
         return sycl_name
     fail("Cannot find DPC++ compiler, please correct your path")
+
+def find_gcc_install_dir(repository_ctx):
+    _, gcc_path, _ = find_gcc(repository_ctx)
+    gcc_install_dir = repository_ctx.execute([gcc_path, "-print-libgcc-file-name"])
+    return str(repository_ctx.path(gcc_install_dir.stdout.strip()).dirname)
+
+def find_dpcpp_include_path(repository_ctx):
+    """Find DPC++ compiler."""
+    base_path = find_dpcpp_root(repository_ctx)
+    bin_path = repository_ctx.path(base_path + "/" + "bin" + "/" + "icpx")
+    if not bin_path.exists:
+        bin_path = repository_ctx.path(base_path + "/" + "bin" + "/" + "clang")
+        if not bin_path.exists:
+            fail("Cannot find DPC++ compiler, please correct your path")
+    gcc_install_dir_opt = "--gcc-install-dir=" + str(find_gcc_install_dir(repository_ctx))
+    cmd_out = repository_ctx.execute([bin_path, gcc_install_dir_opt, "-fsycl", "-xc++", "-E", "-v", "/dev/null", "-o", "/dev/null"])
+    outlist = cmd_out.stderr.split("\n")
+    real_base_path = str(repository_ctx.path(base_path).realpath).strip()
+    include_dirs = []
+    for l in outlist:
+        if l.startswith(" ") and l.strip().startswith("/") and str(repository_ctx.path(l.strip()).realpath) not in include_dirs:
+            include_dirs.append(str(repository_ctx.path(l.strip()).realpath))
+    return include_dirs
 
 def get_dpcpp_version(repository_ctx):
     """Get DPC++ compiler version yyyymmdd"""
@@ -123,20 +169,21 @@ def find_mkl_path(repository_ctx):
 
 def find_aot_config(repository_ctx):
     """Find AOT config."""
-    aot_config = " -Xs \'-options -cl-poison-unsupported-fp64-kernels\'"
-    device_tmp = " -fsycl-targets=spir64_gen,spir64 -Xs \'-device {}\'"
+    device_tmp = " -Xs \'-device {}\'"
     if _AOT_CONFIG in repository_ctx.os.environ:
         devices = repository_ctx.os.environ[_AOT_CONFIG].strip()
         device_list = []
         if devices:
             device_list = devices.split(",")
+        else:
+            return ""
         if device_list:
             # check for security purpose only here
             for d in device_list:
                 if len(d) > 20:
                     fail("Invalid AOT target: {}".format(d))
-            aot_config += device_tmp.format(devices)
-    return aot_config
+            device_tmp = device_tmp.format(devices)
+    return device_tmp
 
 def find_python_lib(repository_ctx):
     """Returns python path."""
@@ -344,11 +391,11 @@ def _sycl_autoconf_imp(repository_ctx):
         if repository_ctx.os.environ.get("CPATH") != None:
             for p in repository_ctx.os.environ["CPATH"].strip().split(":"):
                 if p != "":
-                    additional_inc += ["\'" + p + "\'"]
+                    additional_inc += [_normalize_include_path(repository_ctx, p)]
         if len(additional_inc) > 0:
             additional_inc = ",".join(additional_inc)
         else:
-            additional_inc = ""
+            additional_inc = "\"\""
 
         if _enable_mkl(repository_ctx) and repository_ctx.os.environ.get("ONEAPI_MKL_PATH") != None:
             dpcpp_defines["%{ONEAPI_MKL_PATH}"] = str(find_mkl_path(repository_ctx))
@@ -362,13 +409,17 @@ def _sycl_autoconf_imp(repository_ctx):
             tmp_dir = "/tmp/" + tmp_suffix
             dpcpp_defines["%{TMP_DIRECTORY}"] = tmp_dir
 
+        # Get GCC compiler info
+        gcc_name, gcc_path, gcc_path_prefix = find_gcc(repository_ctx)
+
         dpcpp_defines["%{cxx_builtin_include_directories}"] = str(builtin_includes)
         dpcpp_defines["%{dpcpp_builtin_include_directories}"] = str(builtin_includes)
         dpcpp_defines["%{extra_no_canonical_prefixes_flags}"] = "\"-fno-canonical-system-headers\""
         dpcpp_defines["%{unfiltered_compile_flags}"] = ""
-        dpcpp_defines["%{host_compiler}"] = "gcc"
-        dpcpp_defines["%{HOST_COMPILER_PATH}"] = "/usr/bin/gcc"
-        dpcpp_defines["%{host_compiler_prefix}"] = "/usr/bin"
+        dpcpp_defines["%{host_compiler}"] = gcc_name
+        dpcpp_defines["%{HOST_COMPILER_PATH}"] = str(gcc_path)
+        dpcpp_defines["%{host_compiler_install_dir}"] = str(find_gcc_install_dir(repository_ctx))
+        dpcpp_defines["%{host_compiler_prefix}"] = str(gcc_path_prefix)
         dpcpp_defines["%{dpcpp_compiler_root}"] = str(find_dpcpp_root(repository_ctx))
         dpcpp_defines["%{linker_bin_path}"] = "/usr/bin"
         dpcpp_defines["%{DPCPP_ROOT_DIR}"] = str(find_dpcpp_root(repository_ctx))
@@ -379,6 +430,19 @@ def _sycl_autoconf_imp(repository_ctx):
         dpcpp_defines["%{TF_SHARED_LIBRARY_DIR}"] = repository_ctx.os.environ[_TF_SHARED_LIBRARY_DIR]
         dpcpp_defines["%{DPCPP_COMPILER_VERSION}"] = str(get_dpcpp_version(repository_ctx))
         dpcpp_defines["%{PYTHON_LIB_PATH}"] = repository_ctx.os.environ[_PYTHON_LIB_PATH]
+
+        dpcpp_internal_inc_dirs = find_dpcpp_include_path(repository_ctx)
+        dpcpp_internal_inc = "\", \"".join(dpcpp_internal_inc_dirs)
+        dpcpp_internal_isystem_inc = []
+        for d in dpcpp_internal_inc_dirs:
+            dpcpp_internal_isystem_inc.append("-isystem\", \"" + d)
+
+        if len(dpcpp_internal_inc_dirs) > 0:
+            dpcpp_defines["%{DPCPP_ISYSTEM_INC}"] = "\"]), \n\tflag_group(flags=[ \"".join(dpcpp_internal_isystem_inc)
+            dpcpp_defines["%{DPCPP_INTERNAL_INC}"] = dpcpp_internal_inc
+        else:
+            dpcpp_defines["%{DPCPP_ISYSTEM_INC}"] = ""
+            dpcpp_defines["%{DPCPP_INTERNAL_INC}"] = ""
 
         unfiltered_cxx_flags = "" if additional_cxxflags == [] else "unfiltered_cxx_flag: "
         unfiltered_cxx_flags += "\n  unfiltered_cxx_flag: ".join(additional_cxxflags)

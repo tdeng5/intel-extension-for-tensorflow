@@ -24,7 +24,9 @@ limitations under the License.
 #include "itex/core/utils/op_kernel.h"
 #include "itex/core/utils/plugin_tensor.h"
 #include "itex/core/utils/status.h"
-
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif
 namespace itex {
 
 enum AssignUpdateType {
@@ -61,6 +63,41 @@ void DenseAssignWrapper(TF_OpKernelContext* tf_ctx, TF_Tensor* tf_source,
   OpKernelContext ctx(tf_ctx);
   const Tensor source(tf_source);
   Tensor dest(tf_dest);
+  size_t size = dest.shape().num_elements() * DataTypeSize(dest.dtype());
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  if (pointer_is_pjrt_tensor(tf_dest)) {
+    TF_Status* tf_status = TF_NewStatus();
+    PJRT_Buffer* pjrt_c_buffer = TF_GetPjRtCBuffer(tf_dest, tf_status);
+    if (pjrt_c_buffer == nullptr) {
+      int device_id = TF_GetDeviceId(tf_ctx);
+      PJRT_Client* pjrt_c_client = TF_GetPjRtCClient(DEVICE_XPU, tf_status);
+
+      int rank = dest.shape().dims();
+      std::vector<int64_t> dimensions(rank);
+      for (int d = 0; d < rank; ++d) {
+        dimensions[d] = dest.shape().dim_size(d);
+      }
+      ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+      if (npdConfig.isXlaAutoJitEnabled()) {
+        std::vector<int64_t> layout(rank);
+        std::iota(layout.rbegin(), layout.rend(), 0);
+        TF_CreatePjRtBuffer(
+            tf_dest,
+            ITEXCreateSEPjRtBuffer(device_id, DataTypeString(dest.dtype()),
+                                   dimensions, layout, pjrt_c_client),
+            "XPU", tf_status);
+      } else {
+        TF_CreatePjRtBuffer(
+            tf_dest,
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(dest.dtype()),
+                                 &dimensions, size, pjrt_c_client),
+            "XPU", tf_status);
+      }
+      TF_DeleteStatus(tf_status);
+    }
+  }
+#endif
 
   functor::DenseUpdate<Device, T, ASSIGN> copy_functor;
   copy_functor(ctx.eigen_device<Device>(), dest.flat<T>(), source.flat<T>());
@@ -73,6 +110,42 @@ void DenseUpdateWrapper(TF_OpKernelContext* tf_ctx, TF_Tensor* tf_source,
   OpKernelContext ctx(tf_ctx);
   const Tensor source(tf_source);
   Tensor dest(tf_dest);
+  size_t size = dest.shape().num_elements() * DataTypeSize(dest.dtype());
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  if (pointer_is_pjrt_tensor(tf_dest)) {
+    TF_Status* tf_status = TF_NewStatus();
+    PJRT_Buffer* pjrt_c_buffer = TF_GetPjRtCBuffer(tf_dest, tf_status);
+    if (pjrt_c_buffer == nullptr) {
+      int device_id = TF_GetDeviceId(tf_ctx);
+      PJRT_Client* pjrt_c_client = TF_GetPjRtCClient(DEVICE_XPU, tf_status);
+
+      int rank = dest.shape().dims();
+      std::vector<int64_t> dimensions(rank);
+      for (int d = 0; d < rank; ++d) {
+        dimensions[d] = dest.shape().dim_size(d);
+      }
+      ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+      if (npdConfig.isXlaAutoJitEnabled()) {
+        std::vector<int64_t> layout(rank);
+        std::iota(layout.rbegin(), layout.rend(), 0);
+        TF_CreatePjRtBuffer(
+            tf_dest,
+            ITEXCreateSEPjRtBuffer(device_id, DataTypeString(dest.dtype()),
+                                   dimensions, layout, pjrt_c_client),
+            "XPU", tf_status);
+      } else {
+        TF_CreatePjRtBuffer(
+            tf_dest,
+            ITEXCreatePjRtBuffer(device_id, DataTypeString(dest.dtype()),
+                                 &dimensions, size, pjrt_c_client),
+            "XPU", tf_status);
+      }
+      TF_DeleteStatus(tf_status);
+    }
+  }
+#endif
+
   if (Op == AssignUpdateType::Assign) {
     functor::DenseUpdate<Device, T, ASSIGN> update_functor;
     update_functor(ctx.eigen_device<Device>(), dest.flat<T>(),

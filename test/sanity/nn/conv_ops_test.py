@@ -75,12 +75,9 @@ class Conv2DTest(test.TestCase):
 
   def _DtypesToTest(self, use_gpu, forward=True):
     if forward:
-      # return [dtypes.float32, dtypes.float16]
-      # TODO(itex): Turn on fp16 forward test, once we upgrade the
-      # OneDnn which fix accuracy issue
-      return [dtypes.float32]
+      return [dtypes.float32, dtypes.float16]
     else:
-      return [dtypes.float32]
+      return [dtypes.float32, dtypes.float16]
 
   def _CreateNumpyTensor(self, shape):
     total_size = 1
@@ -420,6 +417,16 @@ class Conv2DTest(test.TestCase):
     self._VerifyValues(
         tensor_in_sizes=[1, 2, 3, 3],
         filter_in_sizes=[2, 2, 3, 3],
+        strides=[2, 2],
+        padding="SAME",
+        expected=expected_output)
+  
+  @test_util.run_in_graph_and_eager_modes
+  def testConv2D2x2GroupedFilterStride2Same(self):
+    expected_output = [217., 271., 333., 119., 152., 189.]
+    self._VerifyValues(
+        tensor_in_sizes=[1, 2, 3, 3],
+        filter_in_sizes=[2, 2, 1, 3],
         strides=[2, 2],
         padding="SAME",
         expected=expected_output)

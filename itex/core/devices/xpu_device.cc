@@ -12,8 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#ifndef CC_BUILD
+#include "itex/core/devices/xpu_device.h"
+#endif
 
-#include "itex/core/devices/xpu_device_util.h"
+#include "itex/core/devices/device_backend_util.h"
 #include "itex/core/utils/types.h"
 #include "tensorflow/c/experimental/stream_executor/stream_executor.h"
 #ifndef INTEL_CPU_ONLY
@@ -30,6 +33,13 @@ namespace itex {
 
 void xpu_device_count(const SP_Platform* platform, int* device_count,
                       TF_Status* status) {
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+  if (npdConfig.IfEnableNextPluggableDevice()) {
+    *device_count = 0;
+    return;
+  }
+#endif
   ITEX_BACKEND backend = itex_get_backend();
   switch (backend) {
     case ITEX_BACKEND_GPU:
@@ -47,8 +57,7 @@ void xpu_device_count(const SP_Platform* platform, int* device_count,
 void xpu_create_device(const SP_Platform* platform,
                        SE_CreateDeviceParams* params, TF_Status* const status) {
   ITEX_BACKEND backend = itex_get_backend();
-  ConfigProto config = itex_get_config();
-  itex_freeze_backend(backend, config);
+  itex_freeze_backend(backend);
   switch (backend) {
     case ITEX_BACKEND_GPU:
       itex::gpu_create_device(platform, params, status);
@@ -777,11 +786,27 @@ void SE_InitXPUPluginFns(SE_PlatformRegistrationParams* const params,
 
 }  // namespace itex
 
+#ifndef CC_BUILD
+void SE_InitPlugin_Internal(SE_PlatformRegistrationParams* const params,
+                            TF_Status* const status) {
+#else
 void SE_InitPlugin(SE_PlatformRegistrationParams* const params,
                    TF_Status* const status) {
+#endif
   params->platform->struct_size = SP_PLATFORM_STRUCT_SIZE;
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  ITEXNpdConfig& npdConfig = ITEXNpdConfig::getNpdConfig();
+  if (npdConfig.IfEnableNextPluggableDevice()) {
+    params->platform->name = "XPU_DUMMY";
+    params->platform->type = "XPU_DUMMY";
+  } else {
+    params->platform->name = DEVICE_XPU_NAME;
+    params->platform->type = itex::DEVICE_XPU;
+  }
+#else
   params->platform->name = DEVICE_XPU_NAME;
   params->platform->type = itex::DEVICE_XPU;
+#endif
   // TODO(itex): check whether we need to turn on this setting
   // params->platform->supports_unified_memory = true;
   // params->platform->use_bfc_allocator = true;

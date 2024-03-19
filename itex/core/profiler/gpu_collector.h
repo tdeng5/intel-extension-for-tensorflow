@@ -23,7 +23,7 @@ limitations under the License.
 #include <vector>
 
 #if __has_include(<sycl/sycl.hpp>)
-#include <sycl/backend/level_zero.hpp>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
 #include <sycl/sycl.hpp>
 #elif __has_include(<CL/sycl.hpp>)
 #include <CL/sycl.hpp>
@@ -57,12 +57,12 @@ class PerDeviceCollector {
   PerDeviceCollector(int device_id, uint64_t start_walltime_ns,
                      uint64_t start_gpu_ns)
       : start_walltime_ns_(start_walltime_ns), start_gpu_ns_(start_gpu_ns) {
-    DPCPPDevice* device_h;
-    dpcppGetDevice(&device_h, device_id);
-    std::vector<DPCPPStream*> stream_pool;
-    dpcppGetStreamPool(device_h, &stream_pool);
+    ITEX_GPUDevice* device_h;
+    ITEX_GPUGetDevice(&device_h, device_id);
+    std::vector<ITEX_GPUStream*> stream_pool;
+    ITEX_GPUGetStreamPool(device_h, &stream_pool);
     auto l0_native_queue =
-        sycl::get_native<sycl::backend::level_zero>(*device_h);
+        sycl::get_native<sycl::backend::ext_oneapi_level_zero>(*device_h);
     zePluggableTracerQueueList queue_list = ZeKernelCollector::
         GetzePluggableTracerDeviceQueueMap()[l0_native_queue];
     queues_.assign(queue_list.begin(), queue_list.end());
@@ -71,8 +71,14 @@ class PerDeviceCollector {
   void CreateXEvent(const zePluggableTracerEventList& event_list,
                     XPlaneBuilder* plane, XLineBuilder* line) {
     for (const zePluggableTracerEvent& event : event_list) {
-      if (event.host_start_time + start_gpu_ns_ < start_walltime_ns_) continue;
       std::string kernel_name = event.kernel_name;
+      if (event.append_time + start_gpu_ns_ < start_walltime_ns_) {
+        ITEX_VLOG(2) << "Skip events have abnormal timestamps:"
+                     << event.kernel_name
+                     << " start time(ns): " << event.append_time + start_gpu_ns_
+                     << " start wall time(ns): " << start_walltime_ns_;
+        continue;
+      }
       XEventMetadata* event_metadata =
           plane->GetOrCreateEventMetadata(std::move(kernel_name));
       XEventBuilder xevent = line->AddEvent(*event_metadata);

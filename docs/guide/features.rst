@@ -84,11 +84,53 @@ Please refer to `CPU Launcher <launch.html>`_ for details.
    
 INT8 Quantization
 -----------------------------------------------------------
-Intel® Extension for TensorFlow\* co-works with Intel® Neural Compressor(https://github.com/intel/neural-compressor) v1.14.1 or newer to provide compatible TensorFlow INT8 quantization solution support with same user experience. 
+Intel® Extension for TensorFlow\* co-works with Intel® Neural Compressor(https://github.com/intel/neural-compressor) to provide compatible TensorFlow INT8 quantization solution support with same user experience. 
 
-Please find a setp by step practice `Accelerate AlexNet by Quantization with Intel® Extenstion for Tensorflow*` in Intel® Extension for TensorFlow\* examples.
+Please refer to `INT8 Quantization <INT8_quantization.html>`_ for details.
 
 .. toctree::
    :hidden:
    :maxdepth: 1
-   
+
+   INT8_quantization.md
+
+XPUAutoShard on GPU [Experimental]
+-----------------------------------------------------------
+Intel® Extension for TensorFlow\* provides XPUAutoShard feature to automatically shard the input data and the TensorFlow graph, placing these data/graph shards on GPU devices to maximize the hardware usage. 
+
+Please refer to `XPUAutoShard <XPUAutoShard.html>`_ for details.
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+
+   XPUAutoShard.md
+
+OpenXLA Support on GPU [Experimental]
+-----------------------------------------------------------
+Intel® Extension for TensorFlow\* adopts a uniform Device API PJRT(https://github.com/openxla/community/blob/main/rfcs/20230123-pjrt-plugin.md) as the supported device plugin mechanism to implement Intel GPU backend for OpenXLA experimental support.
+
+Please refer to `OpenXLA_Support_on_GPU <OpenXLA_Support_on_GPU.html>`_ for details.
+
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+
+   OpenXLA_Support_on_GPU.md
+
+TensorFlow Serving
+-----------------------------------------------------------
+[TensorFlow Serving](https://www.tensorflow.org/tfx/guide/serving) is an open-source system designed by Google that acts as a bridge between trained machine learning models and the applications that need to use them, streamlining the process of deploying and serving models in a production environment while maintaining efficiency and scalability.
+
+It's easy to get started using TensorFlow Serving with Intel® Extension for TensorFlow*.
+
+Please refer to `Install TensorFlow Serving with Intel® Extension for TensorFlow* <tf_serving_install.html>`_ for details.
+
+
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+
+   tf_serving_install.md
+

@@ -1,4 +1,4 @@
-# Copyright (c) 2022 Intel Corporation
+# Copyright (c) 2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,14 @@
 # ==============================================================================
 
 # pylint: disable=g-bad-import-order,unused-import,missing-module-docstring,unused-import,line-too-long
+from intel_extension_for_tensorflow.python.ops.beam_select import beam_select_kv_cache
 from intel_extension_for_tensorflow.python.ops.activations import gelu
+from intel_extension_for_tensorflow.python.ops.rotary_embedding import qk_rotary_positional_embedding
 from intel_extension_for_tensorflow.python.ops import ops_grad as _ops_grad
-from intel_extension_for_tensorflow.python.ops.optimizers import AdamWithWeightDecayOptimizer
+from intel_extension_for_tensorflow.python.ops.optimizers import AdamWithWeightDecayOptimizer, AdamWithWeightDecayLegacyOptimizer, LAMBOptimizer
 from intel_extension_for_tensorflow.python.ops.layer_norm import LayerNormalization
+from intel_extension_for_tensorflow.python.ops.group_norm import GroupNormalization
+from intel_extension_for_tensorflow.python.ops.rms_norm import RMSNormalization
 from intel_extension_for_tensorflow.python.ops.recurrent import ItexLSTM
+from intel_extension_for_tensorflow.python.ops.mlp import FusedDenseBiasAddGelu
+from intel_extension_for_tensorflow.python.ops.multi_head_attention import scaled_dot_product_attention

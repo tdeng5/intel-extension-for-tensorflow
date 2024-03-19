@@ -1,22 +1,47 @@
+build --nocheck_visibility
 # This config option is used for CPU backend.
 build:cpu --define=build_with_onednn=true
+build:cpu --define=build_with_onednn_graph=true
 build:cpu --define=build_with_graph_compiler=true
-build:cpu --copt=-DINTEL_CPU_ONLY
-build:cpu --copt=-march=native
-build:cpu --cxxopt=-std=c++14
-build:cpu --host_cxxopt=-std=c++14
 build:cpu -c opt
+build:cpu --copt=-DINTEL_CPU_ONLY
+build:cpu --copt=-D__STDC_FORMAT_MACROS
+build:cpu --copt=-mfma --copt=-O3 --copt=-mavx --copt=-mavx2
+# By default, build ITEX in C++ 17 mode to align with Tensorflow
+build:cpu --cxxopt=-std=c++17
+build:cpu --host_cxxopt=-std=c++17
+build:cpu --define=device=cpu
 # TODO(itex): Enable TBB by default once it's ready.
 # build:cpu --define=build_with_tbb=true
 
-# This config option is used for GPU backend.
+# This config option is used for GPU backend. (Deprecated)
 build:gpu --crosstool_top=@local_config_dpcpp//crosstool_dpcpp:toolchain
-build:gpu --define=using_dpcpp=true --define=build_with_dpcpp=true
+build:gpu --define=using_dpcpp=true --define=build_with_dpcpp=true --define=using_xetla=true --define=using_nextpluggable=true
+build:gpu --define=build_with_onednn_graph=true
+build:gpu --define=device=gpu
+build:gpu --define=tensorflow_mkldnn_contraction_kernel=0
+
+# This config option is used for GPU backend.
+# xpu will replace gpu as default config option for GPU only backend.
+build:xpu --crosstool_top=@local_config_dpcpp//crosstool_dpcpp:toolchain
+build:xpu --define=using_dpcpp=true --define=build_with_dpcpp=true --define=using_xetla=true --define=using_nextpluggable=true
+build:xpu --define=build_with_onednn_graph=true
+build:xpu --define=device=gpu
+build:xpu --define=tensorflow_mkldnn_contraction_kernel=0
+
+# This config option is used for XPU backend (CPU + GPU). (Disabled)
+# build:xpu --crosstool_top=@local_config_dpcpp//crosstool_dpcpp:toolchain
+# build:xpu --define=using_xetla=true
+# build:xpu --define=build_as_xpu=true
+# build:xpu --define=build_with_onednn_graph=true
+# build:xpu --define=build_with_graph_compiler=true
+# build:xpu --define=tensorflow_mkldnn_contraction_kernel=0
+# build:xpu --define=using_nextpluggable=false
 
 # This config option is used for LLGA (OneDnnGraph) debugging
 build:llga-debug --define=build_with_llga_debug=true
 
-# This config option is used for LLGA (OneDnnGraph) graph compiler backend
+# This config option is used for LLGA (OneDnnGraph) graph compiler backend, default enabled on cpu
 build:graph-compiler --define=build_with_graph_compiler=true
 
 build --define=use_fast_cpp_protos=true
@@ -30,11 +55,16 @@ build -c opt
 build --define=PREFIX=/usr
 build --define=LIBDIR=$(PREFIX)/lib
 build --define=INCLUDEDIR=$(PREFIX)/include
-
 # host build is useless
 build --distinct_host_configuration=false
 
+# Build github revision info to binary
+build --workspace_status_command=./itex/tools/get_itex_version.sh
+
 # Default options should come above this line
+#
+# Flag to enable remote config
+common --experimental_repo_remote_exec
 
 # Options from ./configure
 try-import %workspace%/.itex_configure.bazelrc

@@ -1,0 +1,28 @@
+diff --git a/official/legacy/image_classification/classifier_trainer.py b/official/legacy/image_classification/classifier_trainer.py
+index 8f1d2e6b6..bad0ab107 100644
+--- a/official/legacy/image_classification/classifier_trainer.py
++++ b/official/legacy/image_classification/classifier_trainer.py
+@@ -284,6 +284,15 @@ def serialize_config(params: base_configs.ExperimentConfig, model_dir: str):
+   hyperparams.save_params_dict_to_yaml(params, params_save_path)
+ 
+ 
++class dummy_context:
++  def __init__(self):
++    pass
++  def __enter__(self):
++    pass
++  def __exit__(self, exc_type, exc_value, traceback):
++    pass
++
++
+ def train_and_eval(
+     params: base_configs.ExperimentConfig,
+     strategy_override: tf.distribute.Strategy) -> Mapping[str, Any]:
+@@ -324,6 +333,7 @@ def train_and_eval(
+   initialize(params, train_builder)
+ 
+   logging.info('Global batch size: %d', train_builder.global_batch_size)
++  strategy_scope = dummy_context()
+ 
+   with strategy_scope:
+     model_params = params.model.model_params.as_dict()

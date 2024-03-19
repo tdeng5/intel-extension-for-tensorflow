@@ -34,6 +34,7 @@ limitations under the License.
 #include "itex/core/utils/gtl/flatmap.h"
 #include "itex/core/utils/gtl/flatset.h"
 #include "itex/core/utils/gtl/inlined_vector.h"
+#include "itex/core/utils/plugin_tensor.h"
 #include "itex/core/utils/status.h"
 #include "itex/core/utils/stringpiece.h"
 #include "itex/core/utils/tensor_id.h"
@@ -44,6 +45,23 @@ limitations under the License.
 namespace itex {
 namespace graph {
 
+struct OptimizerContext {
+  explicit OptimizerContext(const char* device_name)
+      : device_name(device_name),
+        is_compute_intensive(true),
+        enable_complete_opt(true) {}
+  const char* device_name;
+  bool is_compute_intensive;
+  bool enable_complete_opt;
+  bool is_quantization_graph;
+};
+
+// Check whether current graph contains compute-intensive ops or not.
+bool HaveComputeIntensiveNode(const GraphDef& graph_def);
+
+// Check whether current graph contains Quantization ops or not.
+bool HaveQuantizeDequantizeNode(const GraphDef& graph_def);
+
 // Dumps 'graph_def' to a file, as a GraphDef text proto. Returns the file name
 // chosen.
 //
@@ -53,7 +71,7 @@ namespace graph {
 // dumped by this process with the same name, suffixes with "_n.pbtxt", where
 // 'n' is a sequence number.
 string DumpGraphDefToFile(const string& name, GraphDef const& graph_def,
-                          const string& dirname);
+                          const string& dirname, bool is_output_binary = false);
 
 // Utilities for manipulating node name and input strings.
 
@@ -341,6 +359,9 @@ bool NodeIsOnCpu(const NodeDef* node);
 // Returns true if the node is assigned to run on GPU device.
 bool NodeIsOnGpu(const NodeDef* node);
 
+// Returns true if the node is assigned to run on XPU device.
+bool NodeIsOnXpu(const NodeDef* node);
+
 // Returns the number of outputs of a node according to its OpDef. Note that
 // some of the outputs may be unconnected.
 int NumOutputs(const NodeDef& node, GraphDef* graph);
@@ -423,6 +444,9 @@ int EraseRegularNodeAttributes(NodeDef* node);
 // Erase attribute "_xla_inferred_shapes" as well as all attributes starting in
 // "_output_".
 int EraseNodeOutputAttributes(NodeDef* node);
+
+Status GetTensorFromConstant(const NodeDef* node_def, Tensor* dst,
+                             string attr_name = "value");
 
 }  // end namespace graph
 }  // end namespace itex

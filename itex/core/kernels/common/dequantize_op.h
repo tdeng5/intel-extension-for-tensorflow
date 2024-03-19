@@ -20,6 +20,7 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "itex/core/kernels/common/host_data_cache.h"
 #include "itex/core/utils/errors.h"
 #include "itex/core/utils/onednn/onednn_util.h"
 #include "itex/core/utils/op_kernel.h"
@@ -114,16 +115,27 @@ class DequantizeOp : public OpKernel {
 
       // Set the scale factor for quantize
       primitive_attr post_ops_attr;
+      float* scale_factor_ptr = output_scale_cache_.GetCachedPtr(
+          context, scale_factor.data(), num_slices);
+      int32* zero_point_ptr = zero_point_cache_.GetCachedPtr(
+          context, zero_points.data(), num_slices);
+      memory output_scales_mem(
+          {{num_slices}, memory::data_type::f32, memory::format_tag::x},
+          onednn_engine, reinterpret_cast<void*>(scale_factor_ptr));
+      memory zero_points_mem(
+          {{num_slices}, memory::data_type::s32, memory::format_tag::x},
+          onednn_engine, reinterpret_cast<void*>(zero_point_ptr));
+
       if (num_slices == 1) {
-        post_ops_attr.set_output_scales(0, scale_factor);
+        post_ops_attr.set_scales_mask(DNNL_ARG_SRC, 0);
         if (mode_ == QuantizeMode::MIN_FIRST) {
-          post_ops_attr.set_zero_points(DNNL_ARG_SRC, 0, zero_points);
+          post_ops_attr.set_zero_points_mask(DNNL_ARG_SRC, 0);
         }
       } else {
         int mask = static_cast<int>(std::pow(2, axis_));
-        post_ops_attr.set_output_scales(mask, scale_factor);
+        post_ops_attr.set_scales_mask(DNNL_ARG_SRC, mask);
         if (mode_ == QuantizeMode::MIN_FIRST) {
-          post_ops_attr.set_zero_points(DNNL_ARG_SRC, mask, zero_points);
+          post_ops_attr.set_zero_points_mask(DNNL_ARG_SRC, mask);
         }
       }
 
@@ -149,7 +161,11 @@ class DequantizeOp : public OpKernel {
       // Execute Reorder primitive
       auto onednn_stream = CreateDnnlStream(*context, onednn_engine);
       std::unordered_map<int, memory> fwd_primitive_args = {
-          {DNNL_ARG_SRC, src_mem}, {DNNL_ARG_DST, dst_mem}};
+          {DNNL_ARG_SRC, src_mem},
+          {DNNL_ARG_DST, dst_mem},
+          {DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, output_scales_mem},
+          {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC, zero_points_mem},
+      };
       fwd_primitive.execute(onednn_stream, fwd_primitive_args);
     } catch (dnnl::error& e) {
       string error_msg = "Status: " + std::to_string(e.status) +
@@ -165,6 +181,8 @@ class DequantizeOp : public OpKernel {
   QuantizeMode mode_;
   int axis_;
   bool narrow_range_;
+  HostDataCache<Device, float> output_scale_cache_;
+  HostDataCache<Device, int32> zero_point_cache_;
 };
 
 }  // namespace itex

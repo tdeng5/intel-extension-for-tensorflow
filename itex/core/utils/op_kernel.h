@@ -28,28 +28,43 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "itex/core/utils/allocator.h"
 #include "itex/core/utils/annotated_traceme.h"
+#include "itex/core/utils/control_flow.h"
 #include "itex/core/utils/cpu_info.h"
 #include "itex/core/utils/env_var.h"
 #include "itex/core/utils/kernel_def_util.h"
 #include "itex/core/utils/logging.h"
 #include "itex/core/utils/mutex.h"
+#include "itex/core/utils/notification.h"
 #include "itex/core/utils/plugin_tensor.h"
 #include "itex/core/utils/types.h"
 #include "protos/node_def.pb.h"
+#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+
+#ifndef ITEX_BUILD_JAX
 #include "tensorflow/c/c_api.h"
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#include "tensorflow/c/experimental/next_pluggable_device/c_api.h"
+#include "third_party/build_option/dpcpp/runtime/itex_gpu_runtime.h"
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 #include "tensorflow/c/kernels.h"
 #include "tensorflow/c/kernels_experimental.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #ifndef INTEL_CPU_ONLY
 #include "itex/core/devices/gpu/eigen_stream_device.h"
 #include "itex/core/devices/gpu/gpu_device_plugin.h"
 #endif  // INTEL_CPU_ONLY
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+#define OUTPUT_SIZE 8
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 
 namespace itex {
 
 class OpKernelContext;
 class OpKernelConstruction;
 class PersistentTensor;
+class ResourceMgr;
+class ResourceMgrPool;
+class ScopedStepContainer;
 
 // Empty function, given to C-API requiring a function pointer
 void EmptyCopyFunctor(TF_OpKernelContext* tf_ctx, TF_Tensor* tf_source,
@@ -169,11 +184,30 @@ class OpOutputList {
 
 class OpKernelContext {
  public:
+#ifndef INTEL_CPU_ONLY
+#ifndef USING_NEXTPLUGGABLE_DEVICE
+  explicit OpKernelContext(TF_OpKernelContext* ctx)
+      : ctx_(ctx),
+        outputs_(TF_NumOutputs(ctx_)),
+        status_(TF_NewStatus()),
+        device_(ctx_, status_),
+        resource_mgr(nullptr) {}
+#else
+  explicit OpKernelContext(TF_OpKernelContext* ctx)
+      : ctx_(ctx),
+        outputs_(TF_NumOutputs(ctx_)),
+        status_(TF_NewStatus()),
+        device_(ctx_, status_),
+        resource_mgr(nullptr),
+        npdConfig_(ITEXNpdConfig::getNpdConfig()) {}
+#endif  // USING_NEXTPLUGGABLE_DEVICE
+#else
   explicit OpKernelContext(TF_OpKernelContext* ctx)
       : ctx_(ctx),
         outputs_(TF_NumOutputs(ctx_)),
         status_(TF_NewStatus()),
         device_(ctx_, status_) {}
+#endif
 
   ~OpKernelContext() {
     if (inputs_ != nullptr) {
@@ -186,8 +220,8 @@ class OpKernelContext {
 
   int num_inputs() const;  // { return inputs->size(); }
 
-  // TODO(itex): Add TF_InputIsRef C-API to distinguish whether the input is
-  // ref tensor or not. Currently, input_dtype is not fully funtional at all !!
+  bool input_is_ref(int index) const;
+
   DataType input_dtype(int index) const;
   // Status input_dtype(StringPiece name, DataType* dtype) const;
 
@@ -203,6 +237,7 @@ class OpKernelContext {
   void* tensor_data(int index);
 
   bool is_input_same(int index, std::vector<int64> shape);
+  int64_t step_id() const;
 
   //  Status input_list(StringPiece name, OpInputList* list);
   //
@@ -275,6 +310,13 @@ class OpKernelContext {
   //                         Tensor** tensor,
   //                         AllocatorAttributes attr) TF_MUST_USE_RESULT;
 
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  Status allocate_output(int index, const TensorShape& shape,
+                         const TensorShape& prev_shape, Tensor** tensor,
+                         std::shared_ptr<ITEX_PJRT_Buffer> itex_pjrt_buffer)
+      TF_MUST_USE_RESULT;
+#endif
+
   Status allocate_temp(DataType type, const TensorShape& shape,
                        Tensor* out_temp, AllocatorAttributes allocator_attr,
                        const AllocationAttributes& allocation_attr);
@@ -305,7 +347,6 @@ class OpKernelContext {
   //
   //  Status set_output_ref(StringPiece name, mutex* mu, Tensor*
   //  tensor_for_ref);
-
   // Status mutable_output(StringPiece name, Tensor** tensor);
   Tensor* mutable_output(int index);
 
@@ -329,7 +370,12 @@ class OpKernelContext {
   const Eigen::GpuDevice& eigen_gpu_device() const {
     return device_.eigen_gpu_device_;
   }
+
 #endif  // INTEL_CPU_ONLY
+
+#ifndef INTEL_CPU_ONLY
+  ResourceMgr* resource_manager();
+#endif
 
   template <typename EigenDeviceType>
   const EigenDeviceType& eigen_device() const;
@@ -343,13 +389,33 @@ class OpKernelContext {
 
   void SetStatus(const Status& s);
 
+  uint64_t GetFrameId() const { return TF_GetFrameId(ctx_); }
+  int64_t GetIterId() const { return TF_GetIterId(ctx_); }
+  int64_t GetStepId() const { return TF_GetStepId(ctx_); }
+  int GetDeviceId() const { return TF_GetDeviceId(ctx_); }
+
+  FrameAndIter frame_iter() const {
+    return FrameAndIter(GetFrameId(), GetIterId());
+  }
   static constexpr int kNeverForward = -2;
   static constexpr int kNoReservation = -1;
 
 #ifndef INTEL_CPU_ONLY
-  DPCPPStream* GetDeviceStream() const {
+  ITEX_GPUStream* GetDeviceStream() const {
+#ifndef USING_NEXTPLUGGABLE_DEVICE
     return TF_GetStream(ctx_, status_)->stream_handle;
   }
+#else
+    if (npdConfig_.IfEnableNextPluggableDevice()) {
+      int device_id = TF_GetDeviceId(ctx_);
+      PJRT_Client* pjrt_c_client = TF_GetPjRtCClient("XPU", status_);
+      return static_cast<ITEX_GPUStream*>(
+          ITEXGetStreamFromPjRtDevice(device_id, pjrt_c_client));
+    } else {
+      return TF_GetStream(ctx_, status_)->stream_handle;
+    }
+  }
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 #else
   void* GetDeviceStream() { return nullptr; }
 #endif  // INTEL_CPU_ONLY
@@ -358,6 +424,22 @@ class OpKernelContext {
                                      const char* correct_macro_name);
 
   TF_OpKernelContext* Get() { return ctx_; }
+
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  void init_pjrt_buffer_cache(
+      gtl::InlinedVector<TensorShape, OUTPUT_SIZE>* prev_shape,
+      gtl::InlinedVector<std::shared_ptr<ITEX_PJRT_Buffer>, OUTPUT_SIZE>*
+          itex_pjrt_buffer) {
+    output_shape_in_first_step_ = prev_shape;
+    itex_pjrt_buffer_ptr_ = itex_pjrt_buffer;
+
+    int output_num = num_outputs();
+    if (output_num > OUTPUT_SIZE) {
+      output_shape_in_first_step_->resize(output_num);
+      itex_pjrt_buffer_ptr_->resize(output_num);
+    }
+  }
+#endif  // USING_NEXTPLUGGABLE_DEVICE
 
  private:
   OpKernelContext() = delete;
@@ -376,10 +458,15 @@ class OpKernelContext {
     InternalDevice(TF_OpKernelContext* ctx, TF_Status* status)
         : status_(status),
           stream_(ctx,
-                  &(static_cast<SP_Stream_st*>(TF_GetStream(ctx, status_))
-                        ->stream_handle),
+#ifndef USING_NEXTPLUGGABLE_DEVICE
+                  (static_cast<SP_Stream_st*>(TF_GetStream(ctx, status_))
+                       ->stream_handle),
+#else
+                  status_,
+#endif  // USING_NEXTPLUGGABLE_DEVICE
                   &tmp_tensors_),
-          eigen_gpu_device_(&stream_) {}
+          eigen_gpu_device_(&stream_) {
+    }
 #else
     InternalDevice(TF_OpKernelContext* ctx, TF_Status* status)
         : status_(status) {}
@@ -400,6 +487,15 @@ class OpKernelContext {
 #endif  // INTEL_CPU_ONLY
   };
   InternalDevice device_;
+#ifndef INTEL_CPU_ONLY
+  ResourceMgr* resource_mgr;
+#endif
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  ITEXNpdConfig& npdConfig_;
+  gtl::InlinedVector<TensorShape, OUTPUT_SIZE>* output_shape_in_first_step_;
+  gtl::InlinedVector<std::shared_ptr<ITEX_PJRT_Buffer>, OUTPUT_SIZE>*
+      itex_pjrt_buffer_ptr_;
+#endif
 };
 
 template <>
@@ -563,9 +659,33 @@ class OpKernel {
 
   std::string TraceString(const OpKernelContext& ctx) const;
 
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  gtl::InlinedVector<TensorShape, OUTPUT_SIZE>* get_prev_shape() {
+    return &output_shape_in_first_step_;
+  }
+
+  gtl::InlinedVector<std::shared_ptr<ITEX_PJRT_Buffer>, OUTPUT_SIZE>*
+  get_itex_pjrt_buffer() {
+    return &itex_pjrt_buffer_;
+  }
+#endif
+
  private:
   absl::string_view op_name;
   absl::string_view op_type;
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  gtl::InlinedVector<TensorShape, OUTPUT_SIZE> output_shape_in_first_step_;
+  gtl::InlinedVector<std::shared_ptr<ITEX_PJRT_Buffer>, OUTPUT_SIZE>
+      itex_pjrt_buffer_;
+#endif
+};
+
+class AsyncOpKernel : public OpKernel {
+ public:
+  using OpKernel::OpKernel;  // Lift OpKernel constructors.
+  typedef std::function<void()> DoneCallback;
+  void Compute(OpKernelContext* context) override;
+  virtual void ComputeAsync(OpKernelContext* context, DoneCallback done) = 0;
 };
 
 class KernelDefBuilder {
@@ -589,10 +709,13 @@ class KernelDefBuilder {
 
   typedef void* (*KernelCreateFunc)(TF_OpKernelConstruction*);
   typedef void (*KernelComputeFunc)(void*, TF_OpKernelContext*);
+  typedef void (*KernelComputeAsyncFunc)(void*, TF_OpKernelContext*,
+                                         TF_AsyncOpKernelDoneCallback* done);
   typedef void (*KernelDeleteFunc)(void*);
 
   KernelDefBuilder& RegisterCreate(KernelCreateFunc func);
   KernelDefBuilder& RegisterCompute(KernelComputeFunc func);
+  KernelDefBuilder& RegisterComputeAsync(KernelComputeAsyncFunc func);
   KernelDefBuilder& RegisterDelete(KernelDeleteFunc func);
 
  protected:
@@ -604,6 +727,7 @@ class KernelDefBuilder {
 
   KernelCreateFunc create_func_;
   KernelComputeFunc compute_func_;
+  KernelComputeAsyncFunc compute_async_func_;
   KernelDeleteFunc delete_func_;
 
   // This is not the same with proper's KernelDefBuilder. Due to this args is
@@ -681,11 +805,11 @@ class Registrar {
 };
 }  // namespace register_kernel
 
-// The synchronize method of dpcpp runtime will be called in this function.
+// The synchronize method of ITEX_GPU runtime will be called in this function.
 //
 // There are 3 methods to implement kernels, including
 //   1. Using Eigen APIs.
-//   2. Using dpcpp APIs.
+//   2. Using ITEX_GPU APIs.
 //   3. Using OneDNN APIs.
 // The triple implementation will use the same stream which is the
 // `sycl::queue`. So we can directly call the wait on the stream at the end of
@@ -695,18 +819,73 @@ class Registrar {
 // types of implementation.
 bool IsSyncExecEnabled();
 bool IsVerboseEnabled();
-inline void RunOrWaitUntilFinish(OpKernelContext* context, OpKernel* op) {
+
+#ifndef INTEL_CPU_ONLY
+const char* const USES_FP64_MATH = "uses-fp64-math";
+const char* const ASPECT_FP64_IS_NOT_SUPPORTED = "aspect fp64 is not supported";
+const char* const FP64_ERROR_FROM_MKL = "double type is not supported";
+
+inline void RunWithSyncHandler(
+    OpKernelContext* context, OpKernel* op,
+    AsyncOpKernel::DoneCallback* callback = nullptr) {
+  try {
+    if (callback) {
+      reinterpret_cast<AsyncOpKernel*>(op)->ComputeAsync(context, *callback);
+    } else {
+      op->Compute(context);
+    }
+  } catch (const sycl::exception& e) {
+    const string& err_msg = e.what();
+    if (err_msg.find(USES_FP64_MATH) != std::string::npos ||
+        err_msg.find(ASPECT_FP64_IS_NOT_SUPPORTED) != std::string::npos ||
+        err_msg.find(FP64_ERROR_FROM_MKL) != std::string::npos) {
+      context->CtxFailureWithWarning(itex::Status(
+          TF_Code::TF_ABORTED,
+          strings::StrCat(
+              op->type(),
+              " op uses fp64 data type, while fp64 instructions are "
+              "not supported on the platform.")));
+    } else {
+      context->CtxFailure(itex::Status(
+          TF_Code::TF_INTERNAL,
+          strings::StrCat(
+              op->type(),
+              " op executes failed with error message: ", err_msg.c_str())));
+    }
+  }
+}
+#endif
+
+inline void RunOrWaitUntilFinish(
+    OpKernelContext* context, OpKernel* op,
+    AsyncOpKernel::DoneCallback* callback = nullptr) {
+#ifdef USING_NEXTPLUGGABLE_DEVICE
+  auto& npdConfig = ITEXNpdConfig::getNpdConfig();
+  if (npdConfig.ifUsingNextPluggableDevice()) {
+    context->init_pjrt_buffer_cache(op->get_prev_shape(),
+                                    op->get_itex_pjrt_buffer());
+  }
+#endif
+
 #ifndef INTEL_CPU_ONLY
   if (IsSyncExecEnabled()) {
     auto start = std::chrono::steady_clock::now();
-    op->Compute(context);
+    if (callback) {  // callback != nullptr means running AsyncOpKernel
+      Notification n;
+      AsyncOpKernel::DoneCallback done = [&n]() { n.Notify(); };
+      RunWithSyncHandler(context, op, &done);
+      n.WaitForNotification();
+      (*callback)();
+    } else {  // callback == nullptr means running OpKernel
+      RunWithSyncHandler(context, op);
+    }
     auto stream = context->GetDeviceStream();
-    auto error = dpcppStreamSynchronize(stream);
-    if (error != DPCPP_SUCCESS) {
+    auto error = ITEX_GPUStreamSynchronize(stream);
+    if (error != ITEX_GPU_SUCCESS) {
       context->CtxFailure(
           __FILE__, __LINE__,
           errors::Internal("Error to call the stream's wait with error ",
-                           dpcppGetErrorName(error)));
+                           ITEX_GPUGetErrorName(error)));
     }
     auto end = std::chrono::steady_clock::now();
     auto elapsed =
@@ -718,18 +897,22 @@ inline void RunOrWaitUntilFinish(OpKernelContext* context, OpKernel* op) {
   } else {
     if (IsVerboseEnabled()) {
       auto start = std::chrono::steady_clock::now();
-      op->Compute(context);
+      RunWithSyncHandler(context, op, callback);
       auto end = std::chrono::steady_clock::now();
       auto elapsed =
           std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
               .count();
       ITEX_VLOG(0) << op->type() << "," << op->name() << "," << elapsed;
     } else {
-      op->Compute(context);
+      RunWithSyncHandler(context, op, callback);
     }
   }
 #else
-  op->Compute(context);
+  if (callback) {
+    reinterpret_cast<AsyncOpKernel*>(op)->ComputeAsync(context, *callback);
+  } else {
+    op->Compute(context);
+  }
 #endif
 }
 
@@ -792,6 +975,56 @@ class OpTypeFactory {
     kernel_builder.KernelClassName(#__VA_ARGS__)                            \
         .RegisterCreate(&Create_##ctr)                                      \
         .RegisterCompute(&Compute_##ctr)                                    \
+        .RegisterComputeAsync(nullptr)                                      \
+        .RegisterDelete(&Delete_##ctr)                                      \
+        .Build(device_name, backend);                                       \
+  }                                                                         \
+  TF_ATTRIBUTE_UNUSED static register_kernel::Registrar const               \
+      registrar_body_##ctr##_object(#__VA_ARGS__, &Register##ctr);
+
+#define REGISTER_ASYNC_KERNEL_BUILDER(kernel_builder, ...)               \
+  REGISTER_ASYNC_KERNEL_BUILDER_UNIQ_HELPER(__COUNTER__, kernel_builder, \
+                                            __VA_ARGS__)
+
+#define REGISTER_ASYNC_KERNEL_BUILDER_UNIQ_HELPER(ctr, kernel_builder, ...) \
+  REGISTER_ASYNC_KERNEL_BUILDER_UNIQ_HELP(ctr, kernel_builder, __VA_ARGS__)
+
+// In ComputeAsync_##ctr, we wrap shared_ptr of ctx in a lambda function named
+// `callback` to prolong ctx's life until `callback` is called.
+#define REGISTER_ASYNC_KERNEL_BUILDER_UNIQ_HELP(ctr, kernel_builder, ...)   \
+  static void* Create_##ctr(TF_OpKernelConstruction* ctx) {                 \
+    OpKernelConstruction context(ctx);                                      \
+    auto kernel = new __VA_ARGS__(&context);                                \
+    absl::string_view op_type =                                             \
+        OpTypeFactory::GetForKernelCreateFunc(&Create_##ctr);               \
+    kernel->set_type(op_type);                                              \
+    return kernel;                                                          \
+  }                                                                         \
+  static void Delete_##ctr(void* kernel) {                                  \
+    if (kernel) {                                                           \
+      delete (static_cast<__VA_ARGS__*>(kernel));                           \
+    }                                                                       \
+  }                                                                         \
+  static void ComputeAsync_##ctr(void* kernel, TF_OpKernelContext* ctx,     \
+                                 TF_AsyncOpKernelDoneCallback* done) {      \
+    auto context = std::make_shared<OpKernelContext>(ctx);                  \
+    AsyncOpKernel::DoneCallback real_done =                                 \
+        *(reinterpret_cast<AsyncOpKernel::DoneCallback*>(done));            \
+    AsyncOpKernel::DoneCallback callback = [real_done, context]() {         \
+      real_done();                                                          \
+    };                                                                      \
+    auto op = static_cast<__VA_ARGS__*>(kernel);                            \
+    ITEX_VLOG(3) << "Executing " << op->name() << " with op type "          \
+                 << op->type();                                             \
+    AnnotatedTraceMe activity(                                              \
+        [op, &context] { return op->TraceString(*context.get()); });        \
+    RunOrWaitUntilFinish(context.get(), op, &callback);                     \
+  }                                                                         \
+  static void Register##ctr(const char* device_name, const char* backend) { \
+    kernel_builder.KernelClassName(#__VA_ARGS__)                            \
+        .RegisterCreate(&Create_##ctr)                                      \
+        .RegisterCompute(nullptr)                                           \
+        .RegisterComputeAsync(&ComputeAsync_##ctr)                          \
         .RegisterDelete(&Delete_##ctr)                                      \
         .Build(device_name, backend);                                       \
   }                                                                         \
@@ -863,5 +1096,5 @@ void CheckNotInComputeAsync(OpKernelContext* ctx,
                             const char* correct_macro_name);
 
 }  // namespace itex
-
+#endif
 #endif  // ITEX_CORE_UTILS_OP_KERNEL_H_
